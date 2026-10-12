@@ -138,7 +138,7 @@ public class GpuMotionSearchTest {
 		int b = texture(curr, W, H);
 		s.addFrame(0, a);
 		s.addFrame(1, b);
-		s.search(0, a, 1, b, true, usePrevious);
+		s.search(0, a, 1, b, true, usePrevious, Brightness.NONE);
 		boolean c = s.readSceneCut();
 		if (cut != null) {
 			cut[0] = c;
@@ -310,12 +310,12 @@ public class GpuMotionSearchTest {
 			int b = texture(gray(size[0], size[1], 7, 3), size[0], size[1]);
 			s.addFrame(0, a);
 			s.addFrame(1, b);
-			s.search(0, a, 1, b, false, false);
+			s.search(0, a, 1, b, false, false, Brightness.NONE);
 			GLES20.glFinish();
 			int runs = 10;
 			long start = System.nanoTime();
 			for (int i = 0; i < runs; i++) {
-				s.search(0, a, 1, b, false, false);
+				s.search(0, a, 1, b, false, false, Brightness.NONE);
 			}
 			GLES20.glFinish();
 			long ms = (System.nanoTime() - start) / runs / 1_000_000L;

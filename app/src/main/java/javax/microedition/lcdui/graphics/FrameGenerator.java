@@ -135,6 +135,8 @@ public final class FrameGenerator {
 		byte[] gray;
 		/** The array of the picture before, no longer needed: the next picture goes into it. */
 		byte[] spare;
+		/** The older picture with the change of brightness applied (reused). */
+		byte[] changed;
 		int frame = -2;
 		/** The motion found into that frame (the guess for the next one), or null. */
 		int[] vectors;
@@ -167,6 +169,11 @@ public final class FrameGenerator {
 	private final AtomicBoolean busy = new AtomicBoolean();
 	/** The kept game frames: frame n is in frameTex[n % KEPT]. */
 	private final int[] frameTex = new int[FramePacer.KEPT];
+	/** How bright each kept frame is (mean and deviation of its grey), to follow fades. */
+	private final float[] frameMean = new float[FramePacer.KEPT];
+	private final float[] frameDeviation = new float[FramePacer.KEPT];
+	private final Brightness brightness = new Brightness();
+	private int[] sampleRow;
 	/** The motion into each kept frame, once the worker has it. */
 	private final Motion[] motions = new Motion[FramePacer.KEPT];
 	private FramePacer pacer = new FramePacer(false);
@@ -482,6 +489,13 @@ public final class FrameGenerator {
 				glBindTexture(GL_TEXTURE_2D, frameTex[0]);
 				GLUtils.texImage2D(GL_TEXTURE_2D, 0, bitmap, 0);
 			}
+			if (mode >= MODE_MOTION) {
+				measureBrightness(bitmap, n % FramePacer.KEPT);
+				if (n == 1) {
+					frameMean[0] = frameMean[1];
+					frameDeviation[0] = frameDeviation[1];
+				}
+			}
 			if (grab) {
 				bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
 			}
@@ -493,6 +507,31 @@ public final class FrameGenerator {
 		if (gpu != null) {
 			searchOnGpu(n);
 		}
+	}
+
+	/** How bright a frame is, from every fourth pixel of every fourth row. */
+	private void measureBrightness(Bitmap bitmap, int slot) {
+		if (sampleRow == null || sampleRow.length != width) {
+			sampleRow = new int[width];
+		}
+		brightness.reset();
+		for (int y = 0; y < height; y += 4) {
+			bitmap.getPixels(sampleRow, 0, width, 0, y, width, 1);
+			for (int x = 0; x < width; x += 4) {
+				brightness.add(sampleRow[x]);
+			}
+		}
+		frameMean[slot] = brightness.mean();
+		frameDeviation[slot] = brightness.deviation();
+	}
+
+	/** How the brightness changed from frame {@code k - 1} to frame {@code k} (a fade or a flash). */
+	private float[] brightnessChange(int k) {
+		if (mode < MODE_MOTION || k < 2) {
+			return Brightness.NONE;
+		}
+		int a = (k - 1) % FramePacer.KEPT, b = k % FramePacer.KEPT;
+		return Brightness.change(frameMean[a], frameDeviation[a], frameMean[b], frameDeviation[b]);
 	}
 
 	/** Searches the motion into frame {@code n} on the GPU, right away. */
@@ -509,7 +548,8 @@ public final class FrameGenerator {
 			// (after a scene cut it is no motion, which guesses nothing)
 			boolean usePrevious = steady && gpuFrame == n - 1;
 			// past the newest frame there is no next one to clean edges with
-			gpu.search(prev, frameTex[prev], slot, frameTex[slot], cleanEdges && !ahead, usePrevious);
+			gpu.search(prev, frameTex[prev], slot, frameTex[slot], cleanEdges && !ahead, usePrevious,
+					brightnessChange(n));
 			gpuFrame = n;
 		} catch (RuntimeException e) {
 			Log.w(TAG, "the GPU motion search failed: the CPU searches from now on", e);
@@ -534,6 +574,7 @@ public final class FrameGenerator {
 		final int gen = generation;
 		final boolean bothWays = cleanEdges && !ahead;
 		final boolean useLast = steady;
+		final float[] change = brightnessChange(index);
 		executor.execute(() -> {
 			try {
 				byte[] gray = fine != null ? FineMotionEstimator.toGray(px, w, h, state.spare)
@@ -545,8 +586,11 @@ public final class FrameGenerator {
 				if (state.gray != null && state.frame == index - 1) {
 					// the motion into the previous frame, if it was worked out: things keep moving
 					int[] guess = useLast ? state.vectors : null;
-					MotionEstimator.Result r = fine != null ? fine.estimate(state.gray, gray, pool, bands, guess)
-							: est.estimate(state.gray, gray, pool, bands, guess);
+					// the older picture as bright as the newer one, so a fade still matches
+					byte[] older = change == Brightness.NONE ? state.gray
+							: (state.changed = Brightness.apply(state.gray, change, state.changed));
+					MotionEstimator.Result r = fine != null ? fine.estimate(older, gray, pool, bands, guess)
+							: est.estimate(older, gray, pool, bands, guess);
 					last = r.sceneCut ? null : r.vectors;
 					// the fine vectors are already in the texture's steps (quarter pixels); the
 					// normal ones are in quarter pixels of the half-size picture, two frame pixels each
@@ -554,8 +598,8 @@ public final class FrameGenerator {
 					byte[] back = null;
 					if (bothWays && !r.sceneCut) {
 						// the same search with the frames swapped: new to old, on the old frame's blocks
-						MotionEstimator.Result b = fine != null ? fine.estimate(gray, state.gray, pool, bands)
-								: est.estimate(gray, state.gray, pool, bands);
+						MotionEstimator.Result b = fine != null ? fine.estimate(gray, older, pool, bands)
+								: est.estimate(gray, older, pool, bands);
 						back = b.encode(scale);
 					}
 					found = new Motion(gen, index, r.cols, r.rows, r.encode(scale), back,
@@ -671,6 +715,8 @@ public final class FrameGenerator {
 		glUniform1i(program.uMotionBack, 3);
 		glUniform1i(program.uError, 4);
 		glUniform1f(program.uUseError, useError ? 1f : 0f);
+		float[] change = brightnessChange(k);
+		glUniform2f(program.uChange, change[0], change[1] / 255f);
 		glUniform1f(program.uCleanEdges, useBack ? 1f : 0f);
 		glUniform1f(program.uT, t);
 		glUniform1f(program.uUseMotion, useMotion ? 1f : 0f);

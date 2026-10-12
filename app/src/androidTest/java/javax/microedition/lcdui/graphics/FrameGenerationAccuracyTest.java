@@ -137,6 +137,57 @@ public class FrameGenerationAccuracyTest {
 		return texture(x - 6.75 * s, y - 1.5 * s, 0);
 	};
 
+	// ------------------------------------------------------------------ harder scenes
+
+	/** A pan faster than the search reaches (32 pixels a frame). */
+	private static final Scene VERY_FAST = (x, y, s) -> texture(x - 44.5 * s, y - 6.25 * s, 0);
+	/** A small object (a bullet, a ball) moving fast over a still background. */
+	private static final Scene SMALL_FAST = (x, y, s) -> {
+		double ox = 60 + 21.5 * s, oy = 180 - 7.5 * s;
+		if (x >= ox && x < ox + 14 && y >= oy && y < oy + 14) {
+			return texture(x - ox, y - oy, 3);
+		}
+		return texture(x, y, 0);
+	};
+	/** Zooming in and turning: every part of the picture moves a different way. */
+	private static final Scene ZOOM = (x, y, s) -> {
+		double k = 1 + 0.05 * s, a = Math.toRadians(1.5) * s;
+		double dx = x - W / 2.0, dy = y - H / 2.0;
+		double u = W / 2.0 + (dx * Math.cos(a) + dy * Math.sin(a)) / k;
+		double v = H / 2.0 + (-dx * Math.sin(a) + dy * Math.cos(a)) / k;
+		return texture(u, v, 0);
+	};
+	/** A pan while the picture gets darker (a fade, or night falling). */
+	private static final Scene FADE = (x, y, s) -> {
+		int c = texture(x - 6.5 * s, y - 2.0 * s, 0);
+		double f = 1 - 0.25 * s;
+		return 0xFF000000 | (clamp(((c >> 16) & 0xFF) * f) << 16) | (clamp(((c >> 8) & 0xFF) * f) << 8)
+				| clamp((c & 0xFF) * f);
+	};
+	/**
+	 * A pattern repeating every 16 pixels, moving 11.25: moving 4.75 the other way fits just as
+	 * well, so only the motion around it can tell (a fence, tiles, water).
+	 */
+	private static final Scene REPEAT = (x, y, s) -> {
+		double u = x - 11.25 * s, v = y - 1.5 * s;
+		double val = 128 + 50 * Math.sin(u * 2 * Math.PI / 16) + 30 * Math.cos(v * 2 * Math.PI / 16)
+				+ ((Math.floor(u / 8) + Math.floor(v / 8)) % 2 == 0 ? 25 : -25);
+		int g = clamp(val);
+		return 0xFF000000 | (g << 16) | (clamp(val * 0.7 + 40) << 8) | clamp(255 - val * 0.6);
+	};
+	/** Two objects moving opposite ways over a still background, one passing in front of the other. */
+	private static final Scene CROSSING = (x, y, s) -> {
+		double ax = 40 + 13.5 * s, ay = 130 + 2.0 * s;
+		double bx = 120 - 11.25 * s, by = 150 - 3.5 * s;
+		if (x >= ax && x < ax + 56 && y >= ay && y < ay + 44) {
+			return texture(x - ax, y - ay, 2); // in front
+		}
+		if (x >= bx && x < bx + 56 && y >= by && y < by + 44) {
+			return texture(x - bx, y - by, 3);
+		}
+		return texture(x, y, 0);
+	};
+
 	private static int[] draw(Scene scene, double s) {
 		int[] out = new int[W * H];
 		for (int y = 0; y < H; y++) {
@@ -255,9 +306,20 @@ public class FrameGenerationAccuracyTest {
 		return compare(got, want);
 	}
 
+	private static final Object[][] SCENES = {{"pan", PAN}, {"fast pan", FAST}, {"object", OBJECT},
+			{"split", SPLIT}, {"pan under HUD", HUD}};
+	private static final Object[][] HARD_SCENES = {{"very fast", VERY_FAST}, {"small fast", SMALL_FAST},
+			{"zoom+turn", ZOOM}, {"fade", FADE}, {"repeating", REPEAT}, {"crossing", CROSSING}};
+
 	private static String sceneName(Scene scene) {
-		return scene == PAN ? "pan" : scene == FAST ? "fast" : scene == OBJECT ? "object"
-				: scene == SPLIT ? "split" : "hud";
+		for (Object[][] list : new Object[][][]{SCENES, HARD_SCENES}) {
+			for (Object[] row : list) {
+				if (row[1] == scene) {
+					return (String) row[0];
+				}
+			}
+		}
+		return "scene";
 	}
 
 	/**
@@ -303,16 +365,46 @@ public class FrameGenerationAccuracyTest {
 
 	private static final Setup[] SETUPS = {
 			new Setup("Blend", FrameGenerator.MODE_BLEND, false, false, false),
-			new Setup("Motion", FrameGenerator.MODE_MOTION, false, false, false),
-			new Setup("Motion HQ", FrameGenerator.MODE_MOTION_HQ, false, false, false),
-			new Setup("HQ clean edges", FrameGenerator.MODE_MOTION_HQ, false, true, false),
-			new Setup("HQ GPU search", FrameGenerator.MODE_MOTION_HQ, true, false, false),
+			new Setup("Performance", FrameGenerator.MODE_MOTION, false, false, false),
+			new Setup("Quality", FrameGenerator.MODE_MOTION_HQ, false, false, false),
+			new Setup("Q clean edges", FrameGenerator.MODE_MOTION_HQ, false, true, false),
+			new Setup("Q on GPU", FrameGenerator.MODE_MOTION_HQ, true, false, false),
 	};
+	private static final Setup LOW_LATENCY =
+			new Setup("Q low latency", FrameGenerator.MODE_MOTION_HQ, false, false, true);
+
+	/** Measures every setup on {@code scenes}, as a table for the log. */
+	private static String table(String title, Object[][] scenes) throws InterruptedException {
+		StringBuilder table = new StringBuilder("\n" + title + ": wrong pixels / real faults\n");
+		table.append(String.format(Locale.ROOT, "%-13s %-15s", "", "Repeat"));
+		for (Setup setup : SETUPS) {
+			table.append(String.format(Locale.ROOT, " %-15s", setup.name));
+		}
+		table.append(String.format(Locale.ROOT, " %-15s %-15s\n", "Repeat (1.5)", LOW_LATENCY.name));
+		for (Object[] row : scenes) {
+			Scene scene = (Scene) row[1];
+			double[] repeat = compare(draw(scene, 1), draw(scene, 0.5));
+			table.append(String.format(Locale.ROOT, "%-13s %5.2f%% %5.2f%%  ", row[0], repeat[1], repeat[2]));
+			for (Setup setup : SETUPS) {
+				double[] m = measure(scene, setup, 0.5);
+				table.append(String.format(Locale.ROOT, " %5.2f%% %5.2f%%  ", m[1], m[2]));
+			}
+			double[] ahead = compare(draw(scene, 1), draw(scene, 1.5));
+			double[] m = measure(scene, LOW_LATENCY, 1.5);
+			table.append(String.format(Locale.ROOT, " %5.2f%% %5.2f%%   %5.2f%% %5.2f%%\n",
+					ahead[1], ahead[2], m[1], m[2]));
+		}
+		return table.toString();
+	}
+
+	@Test
+	public void accuracyOnHarderScenes() throws InterruptedException {
+		Log.i(TAG, table("harder scenes, t = 0.5 (low latency: 1.5)", HARD_SCENES));
+	}
 
 	@Test
 	public void accuracyOfEveryModeOnEveryScene() throws InterruptedException {
-		Object[][] scenes = {{"pan", PAN}, {"fast pan", FAST}, {"object", OBJECT}, {"split", SPLIT},
-				{"pan under HUD", HUD}};
+		Object[][] scenes = SCENES;
 		double[] totals = new double[SETUPS.length];
 		StringBuilder table = new StringBuilder("\nwrong pixels / real faults at t = 0.5\n");
 		table.append(String.format(Locale.ROOT, "%-15s %-15s", "", "Repeat"));
@@ -338,8 +430,7 @@ public class FrameGenerationAccuracyTest {
 
 	@Test
 	public void accuracyOfLowLatency() throws InterruptedException {
-		Object[][] scenes = {{"pan", PAN}, {"fast pan", FAST}, {"object", OBJECT}, {"split", SPLIT},
-				{"pan under HUD", HUD}};
+		Object[][] scenes = SCENES;
 		Setup[] setups = {
 				new Setup("HQ low latency", FrameGenerator.MODE_MOTION_HQ, false, false, true),
 				new Setup("GPU low latency", FrameGenerator.MODE_MOTION_HQ, true, false, true),

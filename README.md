@@ -74,6 +74,8 @@ With Motion, **Search on** sets where the motion search runs: **One core** (the 
 
 With Motion, the switch **Low latency** (off by default) removes the added delay: each game frame is shown as soon as the game draws it, and the pictures until the next frame carry it on along its motion (extrapolation) instead of leading up to it. The controls respond almost as fast as with frame generation off. The pictures between frames are a guess, so when something stops, turns or speeds up the picture goes a little too far for a moment, and the edges of moving objects can tear a little instead of looking soft. Clean edges has no effect with it.
 
+Fades, flashes and other changes of the whole picture's brightness are followed too: the motion is searched and checked with the change of brightness taken out, while the blend shows the brightness changing smoothly.
+
 It needs the graphics mode **HW acceleration (OpenGL ES)** (the default) and adds about one game frame of delay (not with Low latency). If the device cannot run it, the game falls back to normal drawing.
 
 ### 3D resolution (Mascot Capsule, experimental)

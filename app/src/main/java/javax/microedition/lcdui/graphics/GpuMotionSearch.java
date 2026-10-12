@@ -145,7 +145,8 @@ final class GpuMotionSearch {
 	/**
 	 * Coarse search on the quarter-size frames, one 4x4 block per fragment, up to 8 pixels each way
 	 * (32 game pixels): like {@link MotionEstimator}, a move must beat staying put by 10% and costs
-	 * a little per pixel moved. Output: motion + 128 in r and a (quarter-size pixels), the mean
+	 * a little per pixel moved. The older frame is compared with its change of brightness applied
+	 * ({@code u_mapPrev} or {@code u_mapCurr}: gain and offset, see {@link Brightness}). Output: motion + 128 in r and a (quarter-size pixels), the mean
 	 * error per pixel in g.
 	 */
 	private static final String COARSE = PRECISION
@@ -153,6 +154,8 @@ final class GpuMotionSearch {
 			+ "uniform sampler2D u_curr;\n"
 			+ "uniform vec2 u_size;\n"
 			+ "uniform vec2 u_grid;\n"
+			+ "uniform vec2 u_mapPrev;\n"
+			+ "uniform vec2 u_mapCurr;\n"
 			+ "varying vec2 v_uv;\n"
 			+ "float px(sampler2D t, vec2 p) {\n"
 			+ "    return texture2D(t, (p + 0.5) / u_size).r;\n"
@@ -163,7 +166,8 @@ final class GpuMotionSearch {
 			+ "        for (int x = 0; x < 4; x++) {\n"
 			+ "            vec2 p = o + vec2(float(x), float(y));\n"
 			+ "            if (p.x < u_size.x && p.y < u_size.y) {\n"
-			+ "                s += abs(px(u_curr, p) - px(u_prev, p + d));\n"
+			+ "                s += abs(px(u_curr, p) * u_mapCurr.x + u_mapCurr.y\n"
+			+ "                        - px(u_prev, p + d) * u_mapPrev.x - u_mapPrev.y);\n"
 			+ "            }\n"
 			+ "        }\n"
 			+ "    }\n"
@@ -221,6 +225,8 @@ final class GpuMotionSearch {
 			+ "uniform sampler2D u_previous;\n"
 			+ "uniform sampler2D u_error;\n"
 			+ "uniform float u_hasPrevious;\n"
+			+ "uniform vec2 u_mapPrev;\n"
+			+ "uniform vec2 u_mapCurr;\n"
 			+ "uniform vec2 u_size;\n"
 			+ "uniform vec2 u_grid;\n"
 			+ "uniform vec2 u_coarseGrid;\n"
@@ -237,7 +243,8 @@ final class GpuMotionSearch {
 			+ "        for (int x = 0; x < 8; x++) {\n"
 			+ "            vec2 p = g_o + vec2(float(x), float(y));\n"
 			+ "            if (p.x < u_size.x && p.y < u_size.y) {\n"
-			+ "                s += abs(luma(u_curr, p) - luma(u_prev, p + d));\n"
+			+ "                s += abs(luma(u_curr, p) * u_mapCurr.x + u_mapCurr.y\n"
+			+ "                        - luma(u_prev, p + d) * u_mapPrev.x - u_mapPrev.y);\n"
 			+ "            }\n"
 			+ "        }\n"
 			+ "    }\n"
@@ -650,15 +657,20 @@ final class GpuMotionSearch {
 	 *
 	 * @param usePrevious offer the motion of the last search as a guess (when it was into the
 	 *                    previous frame: steady motion)
+	 * @param brightness  how the brightness changed from the older to the newer frame ({@link
+	 *                    Brightness#change}), applied to the older one before comparing
 	 */
 	void search(int prevSlot, int prevTexture, int currSlot, int currTexture, boolean bothWays,
-				boolean usePrevious) {
+				boolean usePrevious, float[] brightness) {
 		boolean dither = noDither();
 		int previous = usePrevious ? forwardTex[current] : 0;
-		searchOneWay(prevSlot, prevTexture, currSlot, currTexture, forwardTex[1 - current], true, previous);
+		searchOneWay(prevSlot, prevTexture, currSlot, currTexture, forwardTex[1 - current], true, previous,
+				brightness, Brightness.NONE);
 		current = 1 - current;
 		if (bothWays) {
-			searchOneWay(currSlot, currTexture, prevSlot, prevTexture, backwardTex, false, 0);
+			// the older frame is the one searched in now
+			searchOneWay(currSlot, currTexture, prevSlot, prevTexture, backwardTex, false, 0,
+					Brightness.NONE, brightness);
 		}
 		glActiveTexture(GL_TEXTURE0);
 		restoreDither(dither);
@@ -677,14 +689,19 @@ final class GpuMotionSearch {
 		return (pixel.get(0) & 0xFF) > SCENE_CUT_ERROR;
 	}
 
+	/**
+	 * @param mapFrom the change of brightness applied to the frame searched in ({@code fromSlot})
+	 * @param mapTo   the change applied to the frame whose blocks are searched for
+	 */
 	private void searchOneWay(int fromSlot, int fromTexture, int toSlot, int toTexture, int target,
-							  boolean measure, int previous) {
+							  boolean measure, int previous, float[] mapFrom, float[] mapTo) {
 		// coarse search on the quarter-size frames
 		begin(coarse, coarseTex, coarseCols, coarseRows);
 		bind(0, quarterTex[fromSlot], coarse.uniform("u_prev"));
 		bind(1, quarterTex[toSlot], coarse.uniform("u_curr"));
 		glUniform2f(coarse.uniform("u_size"), quarterWidth, quarterHeight);
 		glUniform2f(coarse.uniform("u_grid"), coarseCols, coarseRows);
+		map(coarse, mapFrom, mapTo);
 		end(coarse);
 		if (measure) {
 			// the mean error, for the scene cut; the search back uses the one of the search forward
@@ -706,10 +723,17 @@ final class GpuMotionSearch {
 		glUniform2f(refine.uniform("u_size"), width, height);
 		glUniform2f(refine.uniform("u_grid"), cols, rows);
 		glUniform2f(refine.uniform("u_coarseGrid"), coarseCols, coarseRows);
+		map(refine, mapFrom, mapTo);
 		end(refine);
 		fillInto(refinedTex, filledTex, cols, rows, EDGE_DEPTH);
 		medianInto(filledTex, target, cols, rows);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	}
+
+	/** The changes of brightness of both frames of a pass (grey levels to the shader's 0..1). */
+	private static void map(Pass pass, float[] prev, float[] curr) {
+		glUniform2f(pass.uniform("u_mapPrev"), prev[0], prev[1] / 255f);
+		glUniform2f(pass.uniform("u_mapCurr"), curr[0], curr[1] / 255f);
 	}
 
 	/** Picture coming in at the edges moves with the picture further in (see {@link #FILL}). */

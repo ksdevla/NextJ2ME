@@ -89,6 +89,11 @@ final class InterpolationProgram {
 	 * <p>
 	 * With the GPU search ({@code u_useError}), a scene cut found on the GPU shows the newest frame
 	 * as it is.
+	 * <p>
+	 * During a fade the two frames differ in brightness everywhere, so a motion is also taken as
+	 * agreeing when the older frame, with the change of brightness applied ({@code u_change}: gain
+	 * and offset, see {@link Brightness}), matches the newer one. The blend itself uses the frames
+	 * as they are, so the brightness changes smoothly.
 	 */
 	/**
 	 * The mismatch given to a motion that takes a pixel from outside one of the frames: the picture
@@ -109,6 +114,7 @@ final class InterpolationProgram {
 					+ "uniform sampler2D u_motionBack;\n"
 					+ "uniform sampler2D u_error;\n"
 					+ "uniform float u_useError;\n"
+					+ "uniform vec2 u_change;\n"
 					+ "uniform float u_t;\n"
 					+ "uniform float u_useMotion;\n"
 					+ "uniform float u_motionUnit;\n"
@@ -154,8 +160,10 @@ final class InterpolationProgram {
 					+ "    bool ina = inside(pa);\n"
 					+ "    bool inb = inside(pb);\n"
 					+ "    if (ina && inb) {\n"
+					// as they are, or with the brightness of a fade applied to the older frame
 					+ "        vec3 d = abs(g_a.rgb - g_b.rgb);\n"
-					+ "        e = max(max(d.r, d.g), d.b);\n"
+					+ "        vec3 dc = abs(g_a.rgb * u_change.x + u_change.y - g_b.rgb);\n"
+					+ "        e = min(max(max(d.r, d.g), d.b), max(max(dc.r, dc.g), dc.b));\n"
 					+ "    } else if (inb) {\n"
 					+ "        g_a = g_b;\n"
 					+ "        e = " + UNSEEN + ";\n"
@@ -247,6 +255,7 @@ final class InterpolationProgram {
 	final int uMotionBack;
 	final int uError;
 	final int uUseError;
+	final int uChange;
 	final int uCleanEdges;
 	final int uT;
 	final int uUseMotion;
@@ -266,6 +275,7 @@ final class InterpolationProgram {
 		uMotionBack = glGetUniformLocation(id, "u_motionBack");
 		uError = glGetUniformLocation(id, "u_error");
 		uUseError = glGetUniformLocation(id, "u_useError");
+		uChange = glGetUniformLocation(id, "u_change");
 		uCleanEdges = glGetUniformLocation(id, "u_cleanEdges");
 		uT = glGetUniformLocation(id, "u_t");
 		uUseMotion = glGetUniformLocation(id, "u_useMotion");

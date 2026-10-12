@@ -26,6 +26,7 @@ Measured with a new test that compares each generated picture with the true pict
 - Picture coming in at the edges of the screen (scrolling, camera pans) is taken from the frame that has it, instead of being cross-faded with whatever was there.
 - Blocks at the edges whose picture came in from outside move with the picture further in, instead of with a wrong guess (CPU and GPU search).
 - The Performance search measures the motion to half a pixel instead of two whole pixels (wrong pixels on a pan: 3.5% before, 1.4% now).
+- Fades, flashes and other changes of brightness no longer throw the motion search off: the older frame is compared with the change of brightness applied (real faults in a fade: 4.15% before, 0% now; with Low latency 16.5% before, 0% now). Pictures without a change of brightness are drawn exactly as before.
 - GPU search looks one step further around its best match, which makes it as accurate as the CPU search on fast motion.
 
 ### Faster
