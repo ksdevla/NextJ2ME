@@ -39,3 +39,9 @@ captures/
 .externalNativeBuild
 .cxx
 keystore.properties
+
+# Signed APKs built by Android Studio (Build > Generate Signed App Bundle / APK)
+/app/open/
+/app/play/
+/app/fdroid/
+/app/dev/
