@@ -13,8 +13,8 @@ android {
         applicationId "com.ksdevla.nextj2me"
         minSdk MIN_SDK
         targetSdk TARGET_SDK
-        versionCode 10000 // major * 10000 + minor * 100 + patch; must only ever go up
-        versionName "1.0.0"
+        versionCode 10100 // major * 10000 + minor * 100 + patch; must only ever go up
+        versionName "1.1.0"
         resValue 'string', 'app_name', rootProject.name
         vectorDrawables.useSupportLibrary = true
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"

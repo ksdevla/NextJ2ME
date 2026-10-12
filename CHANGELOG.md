@@ -1,17 +1,21 @@
 # Changelog
 
-## Unreleased
+## NextJ2ME 1.1.0 (2026-10-12)
+
+Frame generation, improved throughout: smoother pacing, an option without the added delay, clearer settings, and much more accurate pictures, measured against the true picture at every moment.
+
+### Highlights
+
+- **Low latency**: frame generation without its added delay of about one game frame.
+- **Even pacing**: every picture placed for the screen refresh that shows it, and the game's own timing wobble evened out.
+- **Ultra**: follows very fast motion, up to 64 pixels per frame.
+- **More accurate pictures**: screen edges, fades, sharp edges, still HUDs and repeating patterns are all handled far better.
+- **Simpler settings**: one Motion mode with **Motion search** (Performance, Quality, Ultra) and **Search on** (One core, Multi-core, GPU).
 
 ### New
 
 - **Even pacing** (frame generation, off by default): places each generated picture for the screen refresh that shows it, so moving things advance by exactly the same distance on every refresh, and tells Android when each picture is due so a late one is skipped instead of shown a refresh late. It also times the pictures from the game's rhythm, which evens out frames the game finishes a few milliseconds early or late.
 - **Low latency** (frame generation with Motion, off by default): shows each game frame as soon as the game draws it and carries it on along its motion until the next one, instead of showing it a frame later. Removes the added delay of about one game frame; the pictures in between are a guess, so they overshoot for a moment when things stop or turn.
-
-### Fixes
-
-- Frame generation: a slow game that stops drawing no longer leaves a half-blended picture on the screen.
-- Frame generation: when the GPU search fails on a phone, the CPU takes over the motion search instead of frames only being blended (with Low latency, instead of no frame generation at all).
-- Frame generation: motion search threads end when a game screen is no longer used, instead of staying behind for the rest of the session.
 
 ### Changed
 
@@ -21,14 +25,13 @@
 
 ### More accurate
 
+Measured with a new test that compares each generated picture with the true picture at that moment:
+
 - **Ultra** (a third Motion search choice): follows motion of up to 64 pixels per frame instead of 32, for very fast racing and scrolling games (real faults on a 44 pixel pan: 26% before, 0.4% now). Performance and Quality are unchanged in cost.
 - Still parts of the picture (a score, text, buttons) are shown as they are instead of being moved with the picture around them (real faults in a HUD: 0.43% before, 0.01% now).
 - A repeating pattern (a fence, tiles, a road) moves the way the rest of the picture does, instead of sometimes the wrong way (real faults on a fence: 9% before, 0.9% now), on the CPU and the GPU.
 - A sharp edge moved by a fraction of a pixel no longer makes the picture fall back to a cross-fade (wrong pixels on a pan with Quality: 0.86% before, 0.04% now).
 - With Low latency the newest frame is drawn between its pixels when moved by a fraction of a pixel (wrong pixels on a pan: 12.6% before, 6.8% now).
-
-Measured with a new test that compares each generated picture with the true picture at that moment (wrong pixels, the Quality search, a fast pan: 6.4% before, 1.4% now):
-
 - Picture coming in at the edges of the screen (scrolling, camera pans) is taken from the frame that has it, instead of being cross-faded with whatever was there.
 - Blocks at the edges whose picture came in from outside move with the picture further in, instead of with a wrong guess (CPU and GPU search).
 - The Performance search measures the motion to half a pixel instead of two whole pixels (wrong pixels on a pan: 3.5% before, 1.4% now).
@@ -39,6 +42,17 @@ Measured with a new test that compares each generated picture with the true pict
 
 - GPU search no longer makes the CPU wait for the GPU after every game frame: scene cuts are told on the GPU.
 - The CPU motion search reuses its buffers instead of allocating new ones for every game frame (less garbage collection, which stutters most on older Android versions).
+
+### Fixes
+
+- Frame generation: a slow game that stops drawing no longer leaves a half-blended picture on the screen.
+- Frame generation: when the GPU search fails on a phone, the CPU takes over the motion search instead of frames only being blended (with Low latency, instead of no frame generation at all).
+- Frame generation: motion search threads end when a game screen is no longer used, instead of staying behind for the rest of the session.
+
+### Good to know
+
+- Games keep their frame generation settings: Motion becomes Motion search Performance, Motion HQ becomes Quality.
+- Installs over 1.0.0; saves, games and settings are kept.
 
 ## NextJ2ME 1.0.0 (2026-10-12)
 
