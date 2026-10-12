@@ -249,9 +249,9 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		});
 		explains(binding.frameGenerationHint, R.string.help_frame_generation);
 		explains(binding.frameGenerationFpsHint, R.string.help_frame_generation_fps);
-		explains(binding.frameGenerationMultiCoreLabel, R.string.help_frame_generation_multi_core);
+		explains(binding.frameGenerationMotionHint, R.string.help_frame_generation_motion);
+		explains(binding.frameGenerationSearchHint, R.string.help_frame_generation_search);
 		explains(binding.frameGenerationCleanEdgesLabel, R.string.help_frame_generation_clean_edges);
-		explains(binding.frameGenerationGpuLabel, R.string.help_frame_generation_gpu);
 		explains(binding.frameGenerationSteadyLabel, R.string.help_frame_generation_steady);
 		explains(binding.frameGenerationEvenPacingLabel, R.string.help_frame_generation_even_pacing);
 		explains(binding.frameGenerationLowLatencyLabel, R.string.help_frame_generation_low_latency);
@@ -363,9 +363,9 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		binding.frameGenerationEvenPacingToggle.setVisibility(gles && on ? View.VISIBLE : View.GONE);
 		int motionRows = gles && motion ? View.VISIBLE : View.GONE;
 		for (View v : new View[]{
-				binding.frameGenerationMultiCoreLabel, binding.frameGenerationMultiCoreToggle,
+				binding.frameGenerationMotionHint, binding.frameGenerationMotionSelector,
+				binding.frameGenerationSearchHint, binding.frameGenerationSearchSelector,
 				binding.frameGenerationCleanEdgesLabel, binding.frameGenerationCleanEdgesToggle,
-				binding.frameGenerationGpuLabel, binding.frameGenerationGpuToggle,
 				binding.frameGenerationSteadyLabel, binding.frameGenerationSteadyToggle,
 				binding.frameGenerationLowLatencyLabel, binding.frameGenerationLowLatencyToggle}) {
 			v.setVisibility(motionRows);
@@ -380,6 +380,20 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 				.setPositiveButton(android.R.string.ok, null)
 				.show());
 	}
+
+	/**
+	 * The frame generation setting of the Motion entry with the Performance search, and with the
+	 * Quality search (FrameGenerator.MODE_MOTION and MODE_MOTION_HQ).
+	 */
+	private static final int FRAME_GENERATION_MOTION = 2;
+	private static final int FRAME_GENERATION_MOTION_HQ = 3;
+	/** The entries of the list of where the search runs. */
+	private static final int SEARCH_ONE_CORE = 0;
+	private static final int SEARCH_MULTI_CORE = 1;
+	private static final int SEARCH_GPU = 2;
+	/** The entries of the motion search list. */
+	private static final int MOTION_PERFORMANCE = 0;
+	private static final int MOTION_QUALITY = 1;
 
 	/** The rates of the frame generation rate list, in its order; 0 = the screen's refresh rate. */
 	private static final int[] FRAME_GENERATION_FPS = {0, 60, 90, 120};
@@ -663,10 +677,14 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		binding.enableTouchInputToggle.setChecked(params.touchInput);
 		int fpsLimit = params.fpsLimit;
 		binding.fpsLimit.setText(fpsLimit > 0 ? Integer.toString(fpsLimit) : "");
-		binding.frameGenerationSelector.setSelection(params.frameGeneration);
-		binding.frameGenerationMultiCoreToggle.setChecked(params.frameGenerationMultiCore);
+		// the motion modes are one entry; which search they use is a list of its own
+		binding.frameGenerationSelector.setSelection(Math.min(params.frameGeneration, FRAME_GENERATION_MOTION));
+		binding.frameGenerationMotionSelector.setSelection(
+				params.frameGeneration == FRAME_GENERATION_MOTION ? MOTION_PERFORMANCE : MOTION_QUALITY);
+		// where the search runs is one list, kept as the two switches it replaced
+		binding.frameGenerationSearchSelector.setSelection(params.frameGenerationGpu ? SEARCH_GPU
+				: params.frameGenerationMultiCore ? SEARCH_MULTI_CORE : SEARCH_ONE_CORE);
 		binding.frameGenerationCleanEdgesToggle.setChecked(params.frameGenerationCleanEdges);
-		binding.frameGenerationGpuToggle.setChecked(params.frameGenerationGpu);
 		binding.frameGenerationSteadyToggle.setChecked(params.frameGenerationSteady);
 		binding.frameGenerationEvenPacingToggle.setChecked(params.frameGenerationEvenPacing);
 		binding.frameGenerationLowLatencyToggle.setChecked(params.frameGenerationLowLatency);
@@ -725,10 +743,17 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 			params.forceFullscreen = binding.forceFullscreenToggle.isChecked();
 			params.showFps = binding.showFpsToggle.isChecked();
 			params.fpsLimit = parseInt(binding.fpsLimit.getText().toString());
-		params.frameGeneration = mode == 1 ? binding.frameGenerationSelector.getSelectedItemPosition() : 0;
-		params.frameGenerationMultiCore = binding.frameGenerationMultiCoreToggle.isChecked();
+		int frameGeneration = binding.frameGenerationSelector.getSelectedItemPosition();
+		if (frameGeneration == FRAME_GENERATION_MOTION
+				&& binding.frameGenerationMotionSelector.getSelectedItemPosition() == MOTION_QUALITY) {
+			frameGeneration = FRAME_GENERATION_MOTION_HQ;
+		}
+		params.frameGeneration = mode == 1 ? frameGeneration : 0;
+		int search = binding.frameGenerationSearchSelector.getSelectedItemPosition();
+		params.frameGenerationGpu = search == SEARCH_GPU;
+		// where the GPU can not search, the CPU does: on several cores
+		params.frameGenerationMultiCore = search != SEARCH_ONE_CORE;
 		params.frameGenerationCleanEdges = binding.frameGenerationCleanEdgesToggle.isChecked();
-		params.frameGenerationGpu = binding.frameGenerationGpuToggle.isChecked();
 		params.frameGenerationSteady = binding.frameGenerationSteadyToggle.isChecked();
 		params.frameGenerationEvenPacing = binding.frameGenerationEvenPacingToggle.isChecked();
 		params.frameGenerationLowLatency = binding.frameGenerationLowLatencyToggle.isChecked();

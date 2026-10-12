@@ -439,6 +439,82 @@
                 tools:visibility="visible" />
 
             <TextView
+                android:id="@+id/frame_generation_motion_hint"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/height_config_row"
+                android:layout_marginBottom="9dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:drawablePadding="6dp"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:text="@string/pref_frame_generation_motion_title"
+                android:textAppearance="?android:attr/textAppearanceSmall"
+                android:textColor="?attr/textColorSecondary"
+                android:textSize="15sp"
+                android:visibility="gone"
+                app:drawableEndCompat="@drawable/ic_info_outline_18"
+                app:drawableTint="?attr/colorAccent"
+                app:layout_constraintEnd_toStartOf="@+id/barrier_screen_config"
+                app:layout_constraintHorizontal_bias="0"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_selector"
+                tools:visibility="visible" />
+
+            <Spinner
+                android:id="@+id/frame_generation_motion_selector"
+                style="@style/SwitchStyle"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_config_row"
+                android:layout_marginBottom="9dp"
+                android:entries="@array/pref_frame_generation_motion_entries"
+                android:textColor="?attr/textColorSecondary"
+                android:textSize="15sp"
+                android:visibility="gone"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toEndOf="@+id/barrier_screen_config"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_selector"
+                tools:visibility="visible" />
+
+            <TextView
+                android:id="@+id/frame_generation_search_hint"
+                android:layout_width="wrap_content"
+                android:layout_height="@dimen/height_config_row"
+                android:layout_marginBottom="9dp"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:drawablePadding="6dp"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:text="@string/pref_frame_generation_search_title"
+                android:textAppearance="?android:attr/textAppearanceSmall"
+                android:textColor="?attr/textColorSecondary"
+                android:textSize="15sp"
+                android:visibility="gone"
+                app:drawableEndCompat="@drawable/ic_info_outline_18"
+                app:drawableTint="?attr/colorAccent"
+                app:layout_constraintEnd_toStartOf="@+id/barrier_screen_config"
+                app:layout_constraintHorizontal_bias="0"
+                app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_motion_selector"
+                tools:visibility="visible" />
+
+            <Spinner
+                android:id="@+id/frame_generation_search_selector"
+                style="@style/SwitchStyle"
+                android:layout_width="0dp"
+                android:layout_height="@dimen/height_config_row"
+                android:layout_marginBottom="9dp"
+                android:entries="@array/pref_frame_generation_search_entries"
+                android:textColor="?attr/textColorSecondary"
+                android:textSize="15sp"
+                android:visibility="gone"
+                app:layout_constraintEnd_toEndOf="parent"
+                app:layout_constraintStart_toEndOf="@+id/barrier_screen_config"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_motion_selector"
+                tools:visibility="visible" />
+
+            <TextView
                 android:id="@+id/frame_generation_fps_hint"
                 android:layout_width="wrap_content"
                 android:layout_height="@dimen/height_config_row"
@@ -458,7 +534,7 @@
                 app:layout_constraintEnd_toStartOf="@+id/barrier_screen_config"
                 app:layout_constraintHorizontal_bias="0"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_selector"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_search_selector"
                 tools:visibility="visible" />
 
             <Spinner
@@ -473,7 +549,7 @@
                 android:visibility="gone"
                 app:layout_constraintEnd_toEndOf="parent"
                 app:layout_constraintStart_toEndOf="@+id/barrier_screen_config"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_selector"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_search_selector"
                 tools:visibility="visible" />
 
             <TextView
@@ -510,39 +586,6 @@
                 tools:visibility="visible" />
 
             <TextView
-                android:id="@+id/frame_generation_multi_core_label"
-                android:layout_width="wrap_content"
-                android:layout_height="@dimen/height_config_row"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:drawablePadding="6dp"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:text="@string/pref_frame_generation_multi_core"
-                android:textAppearance="?android:attr/textAppearanceSmall"
-                android:textColor="?attr/textColorSecondary"
-                android:textSize="15sp"
-                android:visibility="gone"
-                app:drawableEndCompat="@drawable/ic_info_outline_18"
-                app:drawableTint="?attr/colorAccent"
-                app:layout_constraintEnd_toStartOf="@+id/frame_generation_multi_core_toggle"
-                app:layout_constraintHorizontal_bias="0"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_even_pacing_toggle"
-                tools:visibility="visible" />
-
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/frame_generation_multi_core_toggle"
-                style="@style/SwitchStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="@dimen/height_config_row"
-                android:checked="true"
-                android:visibility="gone"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_even_pacing_toggle"
-                tools:visibility="visible" />
-
-            <TextView
                 android:id="@+id/frame_generation_clean_edges_label"
                 android:layout_width="wrap_content"
                 android:layout_height="@dimen/height_config_row"
@@ -561,7 +604,7 @@
                 app:layout_constraintEnd_toStartOf="@+id/frame_generation_clean_edges_toggle"
                 app:layout_constraintHorizontal_bias="0"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_multi_core_toggle"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_even_pacing_toggle"
                 tools:visibility="visible" />
 
             <com.google.android.material.switchmaterial.SwitchMaterial
@@ -572,40 +615,7 @@
                 android:checked="false"
                 android:visibility="gone"
                 app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_multi_core_toggle"
-                tools:visibility="visible" />
-
-            <TextView
-                android:id="@+id/frame_generation_gpu_label"
-                android:layout_width="wrap_content"
-                android:layout_height="@dimen/height_config_row"
-                android:background="?attr/selectableItemBackground"
-                android:clickable="true"
-                android:drawablePadding="6dp"
-                android:focusable="true"
-                android:gravity="center_vertical"
-                android:text="@string/pref_frame_generation_gpu"
-                android:textAppearance="?android:attr/textAppearanceSmall"
-                android:textColor="?attr/textColorSecondary"
-                android:textSize="15sp"
-                android:visibility="gone"
-                app:drawableEndCompat="@drawable/ic_info_outline_18"
-                app:drawableTint="?attr/colorAccent"
-                app:layout_constraintEnd_toStartOf="@+id/frame_generation_gpu_toggle"
-                app:layout_constraintHorizontal_bias="0"
-                app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_clean_edges_toggle"
-                tools:visibility="visible" />
-
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/frame_generation_gpu_toggle"
-                style="@style/SwitchStyle"
-                android:layout_width="wrap_content"
-                android:layout_height="@dimen/height_config_row"
-                android:checked="false"
-                android:visibility="gone"
-                app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_clean_edges_toggle"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_even_pacing_toggle"
                 tools:visibility="visible" />
 
             <TextView
@@ -627,7 +637,7 @@
                 app:layout_constraintEnd_toStartOf="@+id/frame_generation_steady_toggle"
                 app:layout_constraintHorizontal_bias="0"
                 app:layout_constraintStart_toStartOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_gpu_toggle"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_clean_edges_toggle"
                 tools:visibility="visible" />
 
             <com.google.android.material.switchmaterial.SwitchMaterial
@@ -638,7 +648,7 @@
                 android:checked="false"
                 android:visibility="gone"
                 app:layout_constraintEnd_toEndOf="parent"
-                app:layout_constraintTop_toBottomOf="@+id/frame_generation_gpu_toggle"
+                app:layout_constraintTop_toBottomOf="@+id/frame_generation_clean_edges_toggle"
                 tools:visibility="visible" />
 
             <TextView
@@ -713,7 +723,7 @@
                 android:layout_width="10dp"
                 android:layout_height="match_parent"
                 app:barrierDirection="end"
-                app:constraint_referenced_ids="scale_ratio_hint,select_screen_background_color,screen_orientation_hint,scale_type_hint,graphical_mode_hint,fps_limit_hint,frame_generation_hint,frame_generation_fps_hint,render_3d_hint,screen_gravity_hint" />
+                app:constraint_referenced_ids="scale_ratio_hint,select_screen_background_color,screen_orientation_hint,scale_type_hint,graphical_mode_hint,fps_limit_hint,frame_generation_hint,frame_generation_motion_hint,frame_generation_search_hint,frame_generation_fps_hint,render_3d_hint,screen_gravity_hint" />
 
 
         </androidx.constraintlayout.widget.ConstraintLayout><!-- Screen -->

@@ -137,7 +137,7 @@ public abstract class Canvas extends Displayable {
 	private static int scaleRatio;
 	private static int fpsLimit;
 	private static int frameGeneration;
-	private static boolean frameGenerationMultiCore = true;
+	private static boolean frameGenerationMultiCore;
 	private static boolean frameGenerationCleanEdges;
 	private static boolean frameGenerationGpu;
 	private static boolean frameGenerationSteady;
@@ -146,7 +146,7 @@ public abstract class Canvas extends Displayable {
 	/** Whether frame generation shows each game frame at once and carries it on (low latency). */
 	private static boolean frameGenerationLowLatency;
 	/** Pictures per second frame generation shows; 0 = on every screen refresh. */
-	private static int frameGenerationFps;
+	private static int frameGenerationFps = 60;
 	/**
 	 * Without a new game frame for this long, frame generation stops redrawing on every refresh,
 	 * once the newest frame is fully shown.

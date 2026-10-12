@@ -98,7 +98,7 @@ public class ProfileModel {
 
 	/** Whether the motion search of frame generation may use several CPU cores (same result, faster). */
 	@SerializedName("FrameGenerationMultiCore")
-	public boolean frameGenerationMultiCore = true;
+	public boolean frameGenerationMultiCore;
 
 	/** Whether frame generation also searches the motion backward, to clean edges next to moving objects. */
 	@SerializedName("FrameGenerationCleanEdges")
@@ -122,7 +122,7 @@ public class ProfileModel {
 
 	/** Pictures per second frame generation shows; 0 = on every screen refresh. */
 	@SerializedName("FrameGenerationFps")
-	public int frameGenerationFps;
+	public int frameGenerationFps = 60;
 
 	/** Resolution of Mascot Capsule 3D scenes: 0 = normal, 1 = 2x, 2 = 3x (rendered larger, then averaged down). */
 	@SerializedName("Render3dQuality")
