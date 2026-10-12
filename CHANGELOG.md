@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Even pacing** (frame generation, off by default): places each generated picture for the screen refresh that shows it, so moving things advance by exactly the same distance on every refresh, and tells Android when each picture is due so a late one is skipped instead of shown a refresh late. It also times the pictures from the game's rhythm, which evens out frames the game finishes a few milliseconds early or late.
+- **Low latency** (frame generation with Motion or Motion HQ, off by default): shows each game frame as soon as the game draws it and carries it on along its motion until the next one, instead of showing it a frame later. Removes the added delay of about one game frame; the pictures in between are a guess, so they overshoot for a moment when things stop or turn.
+
+### Fixes
+
+- Frame generation: a slow game that stops drawing no longer leaves a half-blended picture on the screen.
+- Frame generation: when the GPU search fails on a phone, the CPU takes over the motion search instead of frames only being blended (with Low latency, instead of no frame generation at all).
+- Frame generation: motion search threads end when a game screen is no longer used, instead of staying behind for the rest of the session.
+
+### More accurate
+
+Measured with a new test that compares each generated picture with the true picture at that moment (wrong pixels, Motion HQ, a fast pan: 6.4% before, 1.4% now):
+
+- Picture coming in at the edges of the screen (scrolling, camera pans) is taken from the frame that has it, instead of being cross-faded with whatever was there.
+- Blocks at the edges whose picture came in from outside move with the picture further in, instead of with a wrong guess (CPU and GPU search).
+- Motion measures the motion to half a pixel instead of two whole pixels (wrong pixels on a pan: 3.5% before, 1.4% now).
+- GPU search looks one step further around its best match, which makes it as accurate as the CPU search on fast motion.
+
+### Faster
+
+- GPU search no longer makes the CPU wait for the GPU after every game frame: scene cuts are told on the GPU.
+- The CPU motion search reuses its buffers instead of allocating new ones for every game frame (less garbage collection, which stutters most on older Android versions).
+
 ## NextJ2ME 1.0.0 (2026-10-12)
 
 The first release of NextJ2ME, a community fork of [J2ME Loader](https://github.com/nikita36078/J2ME-Loader). It is based on J2ME Loader 1.8.2 plus the upstream fixes made since then, keeps everything the original does, and adds the features below.

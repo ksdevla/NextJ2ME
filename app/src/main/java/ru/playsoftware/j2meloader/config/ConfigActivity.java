@@ -253,6 +253,8 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		explains(binding.frameGenerationCleanEdgesLabel, R.string.help_frame_generation_clean_edges);
 		explains(binding.frameGenerationGpuLabel, R.string.help_frame_generation_gpu);
 		explains(binding.frameGenerationSteadyLabel, R.string.help_frame_generation_steady);
+		explains(binding.frameGenerationEvenPacingLabel, R.string.help_frame_generation_even_pacing);
+		explains(binding.frameGenerationLowLatencyLabel, R.string.help_frame_generation_low_latency);
 		explains(binding.render3dHint, R.string.help_render_3d);
 		binding.frameGenerationSelector.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
 			@Override
@@ -357,12 +359,15 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		binding.frameGenerationSelector.setVisibility(gles ? View.VISIBLE : View.GONE);
 		binding.frameGenerationFpsHint.setVisibility(gles && on ? View.VISIBLE : View.GONE);
 		binding.frameGenerationFpsSelector.setVisibility(gles && on ? View.VISIBLE : View.GONE);
+		binding.frameGenerationEvenPacingLabel.setVisibility(gles && on ? View.VISIBLE : View.GONE);
+		binding.frameGenerationEvenPacingToggle.setVisibility(gles && on ? View.VISIBLE : View.GONE);
 		int motionRows = gles && motion ? View.VISIBLE : View.GONE;
 		for (View v : new View[]{
 				binding.frameGenerationMultiCoreLabel, binding.frameGenerationMultiCoreToggle,
 				binding.frameGenerationCleanEdgesLabel, binding.frameGenerationCleanEdgesToggle,
 				binding.frameGenerationGpuLabel, binding.frameGenerationGpuToggle,
-				binding.frameGenerationSteadyLabel, binding.frameGenerationSteadyToggle}) {
+				binding.frameGenerationSteadyLabel, binding.frameGenerationSteadyToggle,
+				binding.frameGenerationLowLatencyLabel, binding.frameGenerationLowLatencyToggle}) {
 			v.setVisibility(motionRows);
 		}
 	}
@@ -663,6 +668,8 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		binding.frameGenerationCleanEdgesToggle.setChecked(params.frameGenerationCleanEdges);
 		binding.frameGenerationGpuToggle.setChecked(params.frameGenerationGpu);
 		binding.frameGenerationSteadyToggle.setChecked(params.frameGenerationSteady);
+		binding.frameGenerationEvenPacingToggle.setChecked(params.frameGenerationEvenPacing);
+		binding.frameGenerationLowLatencyToggle.setChecked(params.frameGenerationLowLatency);
 		binding.frameGenerationFpsSelector.setSelection(frameGenerationFpsPosition(params.frameGenerationFps));
 		binding.render3dQualitySelector.setSelection(params.render3dQuality);
 
@@ -723,6 +730,8 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		params.frameGenerationCleanEdges = binding.frameGenerationCleanEdgesToggle.isChecked();
 		params.frameGenerationGpu = binding.frameGenerationGpuToggle.isChecked();
 		params.frameGenerationSteady = binding.frameGenerationSteadyToggle.isChecked();
+		params.frameGenerationEvenPacing = binding.frameGenerationEvenPacingToggle.isChecked();
+		params.frameGenerationLowLatency = binding.frameGenerationLowLatencyToggle.isChecked();
 		params.frameGenerationFps = FRAME_GENERATION_FPS[Math.max(0,
 				binding.frameGenerationFpsSelector.getSelectedItemPosition())];
 		params.render3dQuality = binding.render3dQualitySelector.getSelectedItemPosition();

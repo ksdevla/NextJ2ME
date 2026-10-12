@@ -29,6 +29,7 @@ import static android.opengl.GLES20.GL_TEXTURE0;
 import static android.opengl.GLES20.GL_TEXTURE1;
 import static android.opengl.GLES20.GL_TEXTURE2;
 import static android.opengl.GLES20.GL_TEXTURE3;
+import static android.opengl.GLES20.GL_TEXTURE4;
 import static android.opengl.GLES20.GL_TEXTURE_2D;
 import static android.opengl.GLES20.GL_TEXTURE_MAG_FILTER;
 import static android.opengl.GLES20.GL_TEXTURE_MIN_FILTER;
@@ -68,7 +69,9 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -84,7 +87,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * until it is ready, or when nothing matches, the two frames are only cross-faded.
  * <p>
  * The price is one game frame of added delay, because the newest frame is shown only after the
- * picture between it and the previous one. All methods must be called on the GL thread.
+ * picture between it and the previous one. With low latency the newest frame is shown as soon as
+ * it comes and, once its motion is known, carried on along that motion until the next frame comes: no added
+ * delay, but a guess, which overshoots for a moment when things stop or turn. All methods must be
+ * called on the GL thread.
  */
 public final class FrameGenerator {
 	private static final String TAG = FrameGenerator.class.getName();
@@ -96,6 +102,8 @@ public final class FrameGenerator {
 	public static final int MODE_MOTION_HQ = 3;
 	private static final int BLOCK = 8;
 	private static final int RANGE = 8;
+	/** How long a motion search thread waits for work before it ends. */
+	private static final long IDLE_SECONDS = 3;
 
 	/** What the worker found out about the motion into a frame (no data: it could not tell). */
 	private static final class Motion {
@@ -125,6 +133,8 @@ public final class FrameGenerator {
 	/** The previous picture seen by the worker; only the worker thread touches it. */
 	private static final class GrayState {
 		byte[] gray;
+		/** The array of the picture before, no longer needed: the next picture goes into it. */
+		byte[] spare;
 		int frame = -2;
 		/** The motion found into that frame (the guess for the next one), or null. */
 		int[] vectors;
@@ -137,10 +147,19 @@ public final class FrameGenerator {
 	private final boolean gpuSearch;
 	/** Offer the motion found into the previous frame as a guess (steady motion). */
 	private final boolean steady;
+	/** Show each frame as soon as it comes and carry it on along its motion (low latency). */
+	private final boolean lowLatency;
+	/** Time the blends from the game's rhythm, not the exact arrival of its frames (even pacing). */
+	private final boolean evenPacing;
+	/** Whether pictures go past the newest frame now: low latency, with a motion search. */
+	private boolean ahead;
 	private GpuMotionSearch gpu;
-	/** The frame the GPU last searched the motion into, and whether it was a scene cut. */
+	/** The GPU search failed while running: the CPU searches from the next allocation on. */
+	private boolean gpuFailed;
+	/** Set up again (for the CPU search) on the next picture. */
+	private boolean reallocate;
+	/** The frame the GPU last searched the motion into. */
 	private int gpuFrame = -1;
-	private boolean gpuSceneCut;
 	private final boolean linear;
 	private final InterpolationProgram program;
 	private final FloatBuffer quad = ByteBuffer.allocateDirect(16 * 4)
@@ -172,6 +191,8 @@ public final class FrameGenerator {
 	private float motionUnit = 1f;
 	private boolean wideSearch;
 	private int[] pixels;
+	/** Holds the motion on its way into a texture. */
+	private ByteBuffer vectorBuffer;
 	private ExecutorService worker;
 	/** Threads that share the motion search with the worker; null on a phone with few cores. */
 	private ExecutorService helpers;
@@ -185,12 +206,15 @@ public final class FrameGenerator {
 	private float blockPxY = 1;
 
 	private FrameGenerator(InterpolationProgram program, int mode, boolean linear, boolean multiCore,
-						   boolean cleanEdges, boolean gpuSearch, boolean steady) {
+						   boolean cleanEdges, boolean gpuSearch, boolean steady, boolean lowLatency,
+						   boolean evenPacing) {
 		this.program = program;
 		this.mode = mode;
 		this.cleanEdges = cleanEdges;
 		this.gpuSearch = gpuSearch;
 		this.steady = steady;
+		this.lowLatency = lowLatency;
+		this.evenPacing = evenPacing;
 		this.parts = multiCore ? searchParts(Runtime.getRuntime().availableProcessors()) : 1;
 		this.linear = linear;
 		// a full-screen quad: clip position then texture position, so the output texture is the
@@ -214,13 +238,20 @@ public final class FrameGenerator {
 	 * @param gpuSearch  search the motion with the GPU instead of the CPU (where the GPU can)
 	 * @param steady     offer the motion found into the previous frame as a guess, which keeps the
 	 *                   motion from jumping between frames
+	 * @param lowLatency show each game frame as soon as it comes and carry it on along its motion
+	 *                   until the next one, instead of showing it a frame later (motion modes only;
+	 *                   it guesses, so it overshoots when things stop or turn)
+	 * @param evenPacing time the pictures from the game's rhythm instead of the exact moments its
+	 *                   frames arrived, which a few milliseconds of wobble would make uneven
 	 * @return null if the device can not run the shader, in which case the normal drawing is used
 	 */
 	public static FrameGenerator create(int mode, boolean linear, boolean multiCore,
-										boolean cleanEdges, boolean gpuSearch, boolean steady) {
+										boolean cleanEdges, boolean gpuSearch, boolean steady,
+										boolean lowLatency, boolean evenPacing) {
 		InterpolationProgram p = InterpolationProgram.create();
 		return p == null ? null
-				: new FrameGenerator(p, mode, linear, multiCore, cleanEdges, gpuSearch, steady);
+				: new FrameGenerator(p, mode, linear, multiCore, cleanEdges, gpuSearch, steady,
+				lowLatency, evenPacing);
 	}
 
 	/**
@@ -234,7 +265,7 @@ public final class FrameGenerator {
 	 * @return the id of a texture with the picture, or 0 if frame generation can not be used
 	 */
 	public int render(Bitmap bitmap, Object bufferLock, int frameCounter, long frameNanos, long nowNanos) {
-		if (!allocated || bitmap.getWidth() != width || bitmap.getHeight() != height) {
+		if (!allocated || reallocate || bitmap.getWidth() != width || bitmap.getHeight() != height) {
 			if (!allocate(bitmap.getWidth(), bitmap.getHeight())) {
 				return 0;
 			}
@@ -244,6 +275,14 @@ public final class FrameGenerator {
 			acceptFrame(bitmap, bufferLock, frameNanos);
 		}
 		return draw(nowNanos);
+	}
+
+	/**
+	 * Whether the last picture was the newest game frame as it is: until the game sends another
+	 * frame, redrawing would show the same picture.
+	 */
+	public boolean isSettled() {
+		return pacer.isSettled();
 	}
 
 	/** Stops the worker and frees the GL objects (when the context is lost they go with it). */
@@ -312,6 +351,7 @@ public final class FrameGenerator {
 
 	private boolean allocate(int w, int h) {
 		releaseBuffers();
+		reallocate = false;
 		generation++;
 		grayState = new GrayState();
 		int[] ids = new int[6];
@@ -356,7 +396,7 @@ public final class FrameGenerator {
 		wideSearch = false;
 		gpuFrame = -1;
 		int minSize = 4 * Math.max(BLOCK, FineMotionEstimator.BLOCK);
-		if (mode >= MODE_MOTION && w >= minSize && h >= minSize && gpuSearch) {
+		if (mode >= MODE_MOTION && w >= minSize && h >= minSize && gpuSearch && !gpuFailed) {
 			gpu = GpuMotionSearch.create(w, h);
 			if (gpu == null) {
 				Log.w(TAG, "the GPU can not search the motion here: the CPU does it");
@@ -380,29 +420,41 @@ public final class FrameGenerator {
 			} else {
 				int gw = w / 2;
 				int gh = h / 2;
-				estimator = new MotionEstimator(gw, gh, BLOCK, RANGE);
+				estimator = new MotionEstimator(gw, gh, BLOCK, RANGE, true);
 				gridCols = estimator.cols();
 				gridRows = estimator.rows();
 				blockPxX = (float) BLOCK * w / gw;
 				blockPxY = (float) BLOCK * h / gh;
+				// quarter pixels of the half-size picture, encoded twice as many: quarter frame pixels
+				motionUnit = MotionEstimator.SUB_UNITS;
 			}
 			pixels = new int[w * h];
-			worker = Executors.newSingleThreadExecutor(r -> {
-				Thread t = new Thread(r, "FrameGenMotion");
-				t.setDaemon(true);
-				return t;
-			});
+			worker = threads(1, "FrameGenMotion");
 			if (parts > 1) {
-				helpers = Executors.newFixedThreadPool(parts - 1, r -> {
-					Thread t = new Thread(r, "FrameGenMotionHelper");
-					t.setDaemon(true);
-					return t;
-				});
+				helpers = threads(parts - 1, "FrameGenMotionHelper");
 			}
 			busy.set(false);
 		}
-		pacer = new FramePacer(worker != null);
+		// going past the newest frame needs its motion; plain blending can only look back
+		ahead = lowLatency && (worker != null || gpu != null);
+		pacer = new FramePacer(worker != null && !ahead, evenPacing);
 		return true;
+	}
+
+	/**
+	 * {@code count} threads for the motion search. They end when they have had nothing to do for a
+	 * while, so a canvas the game no longer shows (its GL context gone, nothing to shut it down)
+	 * does not keep them, and start again with the next job.
+	 */
+	private static ExecutorService threads(int count, String name) {
+		ThreadPoolExecutor pool = new ThreadPoolExecutor(count, count, IDLE_SECONDS, TimeUnit.SECONDS,
+				new LinkedBlockingQueue<>(), r -> {
+			Thread t = new Thread(r, name);
+			t.setDaemon(true);
+			return t;
+		});
+		pool.allowCoreThreadTimeOut(true);
+		return pool;
 	}
 
 	private static void setupTexture(int tex, boolean linear) {
@@ -454,13 +506,16 @@ public final class FrameGenerator {
 			}
 			int prev = (n - 1) % FramePacer.KEPT;
 			// the last search's motion is a guess only if it was into the frame before this one
-			boolean usePrevious = steady && gpuFrame == n - 1 && !gpuSceneCut;
-			gpuSceneCut = gpu.search(prev, frameTex[prev], slot, frameTex[slot], cleanEdges, usePrevious);
+			// (after a scene cut it is no motion, which guesses nothing)
+			boolean usePrevious = steady && gpuFrame == n - 1;
+			// past the newest frame there is no next one to clean edges with
+			gpu.search(prev, frameTex[prev], slot, frameTex[slot], cleanEdges && !ahead, usePrevious);
 			gpuFrame = n;
 		} catch (RuntimeException e) {
-			Log.w(TAG, "the GPU motion search failed: frames are only blended now", e);
-			gpu.release();
-			gpu = null;
+			Log.w(TAG, "the GPU motion search failed: the CPU searches from now on", e);
+			gpuFailed = true;
+			// set up again on the next picture, with the CPU search; until then frames are blended
+			reallocate = true;
 			gpuFrame = -1;
 		}
 	}
@@ -477,12 +532,13 @@ public final class FrameGenerator {
 		final int bands = parts;
 		final GrayState state = grayState;
 		final int gen = generation;
-		final boolean bothWays = cleanEdges;
+		final boolean bothWays = cleanEdges && !ahead;
 		final boolean useLast = steady;
 		executor.execute(() -> {
 			try {
-				byte[] gray = fine != null ? FineMotionEstimator.toGray(px, w, h)
-						: MotionEstimator.toGray(px, w, h);
+				byte[] gray = fine != null ? FineMotionEstimator.toGray(px, w, h, state.spare)
+						: MotionEstimator.toGray(px, w, h, state.spare);
+				state.spare = null; // in use now
 				// a new picture is only grabbed after this job finished, so nothing else reads it
 				Motion found = null;
 				int[] last = null;
@@ -492,8 +548,8 @@ public final class FrameGenerator {
 					MotionEstimator.Result r = fine != null ? fine.estimate(state.gray, gray, pool, bands, guess)
 							: est.estimate(state.gray, gray, pool, bands, guess);
 					last = r.sceneCut ? null : r.vectors;
-					// the fine vectors are already in the texture's steps; the normal ones are in
-					// half-size pixels, two frame pixels each
+					// the fine vectors are already in the texture's steps (quarter pixels); the
+					// normal ones are in quarter pixels of the half-size picture, two frame pixels each
 					int scale = fine != null ? 1 : 2;
 					byte[] back = null;
 					if (bothWays && !r.sceneCut) {
@@ -505,6 +561,7 @@ public final class FrameGenerator {
 					found = new Motion(gen, index, r.cols, r.rows, r.encode(scale), back,
 							r.sceneCut, System.nanoTime());
 				}
+				state.spare = state.gray;
 				state.gray = gray;
 				state.frame = index;
 				state.vectors = last;
@@ -524,6 +581,13 @@ public final class FrameGenerator {
 	// ------------------------------------------------------------------ one screen refresh
 
 	private int draw(long nowNanos) {
+		takeMotion();
+		int k = ahead ? pacer.updateAhead(nowNanos) : pacer.update(nowNanos);
+		return drawPicture(k, pacer.blend());
+	}
+
+	/** Takes the motion the worker published, if it is new. */
+	private void takeMotion() {
 		Motion published = motion;
 		if (published != null && published.generation == generation
 				&& published.frame > frameIndex - FramePacer.KEPT
@@ -531,19 +595,39 @@ public final class FrameGenerator {
 			motions[published.frame % FramePacer.KEPT] = published;
 			pacer.onMotionReady(published.frame, published.readyNanos);
 		}
-		int k = pacer.update(nowNanos);
-		float t = pacer.blend();
+	}
+
+	/**
+	 * For tests: the picture at blend position {@code t} between the two newest frames (above 1:
+	 * past the newest), whatever the time; the texture with it.
+	 */
+	int drawAt(float t) {
+		takeMotion();
+		return drawPicture(frameIndex, t);
+	}
+
+	/** For tests: whether the motion into the newest frame is known (or there is none to wait for). */
+	boolean motionReady() {
+		takeMotion();
+		if (gpu != null) {
+			return frameIndex <= 1 || gpuFrame == frameIndex; // the first frame has none
+		}
+		Motion m = motions[frameIndex % FramePacer.KEPT];
+		return worker == null || (m != null && m.frame == frameIndex);
+	}
+
+	/** Draws the picture between frames k-1 and k at blend position {@code t}. */
+	private int drawPicture(int k, float t) {
 		boolean useMotion = false;
 		boolean useBack = false;
 		Motion m = motions[k % FramePacer.KEPT];
+		boolean useError = false;
 		if (gpu != null) {
 			if (gpuFrame == k) {
-				if (gpuSceneCut) {
-					t = 1f; // a different scene: show it as it is
-				} else {
-					useMotion = true;
-					useBack = cleanEdges;
-				}
+				// a scene cut is told by the shader, from the GPU's own measure
+				useMotion = true;
+				useBack = cleanEdges && !ahead;
+				useError = true;
 			}
 		} else if (m != null && m.frame == k && m.data != null) {
 			if (m.sceneCut) {
@@ -555,6 +639,9 @@ public final class FrameGenerator {
 				useMotion = true;
 				useBack = m.dataBack != null;
 			}
+		}
+		if (!useMotion && t > 1f) {
+			t = 1f; // the motion is not known yet: the newest frame as it is
 		}
 
 		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -576,10 +663,14 @@ public final class FrameGenerator {
 		glBindTexture(GL_TEXTURE_2D, gpu != null ? gpu.forwardTexture() : texMotion);
 		glActiveTexture(GL_TEXTURE3);
 		glBindTexture(GL_TEXTURE_2D, gpu != null ? gpu.backwardTexture() : texMotionBack);
+		glActiveTexture(GL_TEXTURE4);
+		glBindTexture(GL_TEXTURE_2D, gpu != null ? gpu.errorTexture() : texMotion);
 		glUniform1i(program.uPrev, 0);
 		glUniform1i(program.uCurr, 1);
 		glUniform1i(program.uMotion, 2);
 		glUniform1i(program.uMotionBack, 3);
+		glUniform1i(program.uError, 4);
+		glUniform1f(program.uUseError, useError ? 1f : 0f);
 		glUniform1f(program.uCleanEdges, useBack ? 1f : 0f);
 		glUniform1f(program.uT, t);
 		glUniform1f(program.uUseMotion, useMotion ? 1f : 0f);
@@ -610,8 +701,13 @@ public final class FrameGenerator {
 		uploadedMotion = m.frame;
 	}
 
-	private static void uploadVectors(int unit, int texture, byte[] data, int cols, int rows) {
-		ByteBuffer buf = ByteBuffer.allocateDirect(data.length);
+	private void uploadVectors(int unit, int texture, byte[] data, int cols, int rows) {
+		// GL copies the data before it returns, so one buffer serves every upload
+		if (vectorBuffer == null || vectorBuffer.capacity() < data.length) {
+			vectorBuffer = ByteBuffer.allocateDirect(data.length);
+		}
+		ByteBuffer buf = vectorBuffer;
+		buf.clear();
 		buf.put(data).position(0);
 		glActiveTexture(unit);
 		glBindTexture(GL_TEXTURE_2D, texture);

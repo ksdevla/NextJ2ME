@@ -33,12 +33,18 @@ import android.view.WindowManager;
  * only draws when asked) for a picture on the refreshes {@link RedrawCadence} picks. It also asks
  * Android to run the screen at least that fast, which matters for 90 and 120 fps on phones whose
  * screens can do more than 60 Hz.
+ * <p>
+ * With even pacing it also keeps the times of the refreshes ({@link VsyncGrid}), so each picture is
+ * placed for its refresh; then it drives the drawing at the screen's rate too.
  */
 @TargetApi(Build.VERSION_CODES.JELLY_BEAN)
 public final class FrameRateDriver implements Choreographer.FrameCallback {
 	private final GLSurfaceView view;
 	private final int fps;
+	/** Which refreshes draw; null = every refresh. */
 	private final RedrawCadence cadence;
+	/** The refreshes' times, with even pacing; null otherwise. */
+	private final VsyncGrid grid;
 	private final Handler main = new Handler(Looper.getMainLooper());
 	/** Wanted by the renderer (the game is drawing), and not paused (the game is in the background). */
 	private boolean wanted;
@@ -46,22 +52,29 @@ public final class FrameRateDriver implements Choreographer.FrameCallback {
 	private boolean posted;
 	private volatile boolean running;
 
-	private FrameRateDriver(GLSurfaceView view, int fps) {
+	private FrameRateDriver(GLSurfaceView view, int fps, boolean evenPacing) {
 		this.view = view;
 		this.fps = fps;
-		this.cadence = new RedrawCadence(fps);
+		this.cadence = fps > 0 ? new RedrawCadence(fps) : null;
+		this.grid = evenPacing ? new VsyncGrid() : null;
 	}
 
-	/** A driver for {@code fps} pictures per second, or null where this Android can not pace drawing. */
-	public static FrameRateDriver create(GLSurfaceView view, int fps) {
-		if (fps <= 0 || Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) {
+	/**
+	 * A driver for {@code fps} pictures per second (0 = the screen's rate), or null where it is not
+	 * needed (the screen's rate without even pacing) or this Android can not pace drawing.
+	 */
+	public static FrameRateDriver create(GLSurfaceView view, int fps, boolean evenPacing) {
+		if ((fps <= 0 && !evenPacing) || Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) {
 			return null;
 		}
-		return new FrameRateDriver(view, fps);
+		return new FrameRateDriver(view, fps, evenPacing);
 	}
 
 	/** Asks Android to run the screen at least {@code fps} times a second while the game is shown. */
 	public void requestScreenRate(Activity activity) {
+		if (fps <= 0) {
+			return;
+		}
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
 			view.getHolder().addCallback(new SurfaceHolder.Callback() {
 				@Override
@@ -93,6 +106,24 @@ public final class FrameRateDriver implements Choreographer.FrameCallback {
 		}
 	}
 
+	/**
+	 * The time to place a picture for when drawing it started at {@code nowNanos}: its refresh with
+	 * even pacing, otherwise {@code nowNanos}. Called from the GL thread.
+	 */
+	public long pictureTime(long nowNanos) {
+		return grid != null ? grid.snap(nowNanos) : nowNanos;
+	}
+
+	/** Whether pictures are placed for their refreshes (even pacing). */
+	public boolean pacesEvenly() {
+		return grid != null;
+	}
+
+	/** The time between screen refreshes, or 0 while it is not known (or without even pacing). */
+	public long refreshNanos() {
+		return grid != null ? grid.periodNanos() : 0;
+	}
+
 	/** Whether pictures are being asked for (then the game's own frames need not ask). */
 	public boolean isRunning() {
 		return running;
@@ -118,7 +149,12 @@ public final class FrameRateDriver implements Choreographer.FrameCallback {
 		boolean run = wanted && !paused;
 		running = run;
 		if (run && !posted) {
-			cadence.reset();
+			if (cadence != null) {
+				cadence.reset();
+			}
+			if (grid != null) {
+				grid.reset();
+			}
 			posted = true;
 			Choreographer.getInstance().postFrameCallback(this);
 		}
@@ -130,7 +166,10 @@ public final class FrameRateDriver implements Choreographer.FrameCallback {
 		if (!running) {
 			return;
 		}
-		if (cadence.onVsync(frameTimeNanos)) {
+		if (grid != null) {
+			grid.onVsync(frameTimeNanos);
+		}
+		if (cadence == null || cadence.onVsync(frameTimeNanos)) {
 			view.requestRender();
 		}
 		posted = true;

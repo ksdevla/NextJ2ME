@@ -32,6 +32,7 @@ import static android.opengl.GLES20.GL_TEXTURE0;
 import static android.opengl.GLES20.GL_TEXTURE1;
 import static android.opengl.GLES20.GL_TEXTURE2;
 import static android.opengl.GLES20.GL_TEXTURE3;
+import static android.opengl.GLES20.GL_TEXTURE4;
 import static android.opengl.GLES20.GL_TEXTURE_2D;
 import static android.opengl.GLES20.GL_TEXTURE_MAG_FILTER;
 import static android.opengl.GLES20.GL_TEXTURE_MIN_FILTER;
@@ -92,7 +93,9 @@ import java.nio.FloatBuffer;
  * 8x8 blocks of the full-size frames to a quarter pixel, then a 3x3 median), each block worked out
  * by one fragment. The result stays on the GPU, in a texture the interpolation shader reads like
  * the CPU's motion texture: the motion plus 128 in the red and alpha channels, in quarter pixels.
- * Only the mean match error (one pixel) comes back, to tell a scene cut.
+ * Nothing comes back to the CPU: even whether the frames are a scene cut is decided by the shaders
+ * (a 1x1 texture with the mean match error), as reading anything back would make the CPU wait for
+ * the GPU on every game frame.
  * <p>
  * All methods must be called on the GL thread.
  */
@@ -197,18 +200,26 @@ final class GpuMotionSearch {
 			+ "}\n";
 
 	/**
+	 * Whether the mean error in the texture {@code u_error} (see {@link #errorTexture()}) makes the
+	 * two frames a scene cut: a GLSL condition, the same test as the CPU's.
+	 */
+	static final String IS_CUT =
+			"floor(texture2D(u_error, vec2(0.5)).r * 255.0 + 0.5) > " + SCENE_CUT_ERROR;
+
+	/**
 	 * Refinement on the full-size frames, one 8x8 block per fragment: the coarse motion of the block's
 	 * place and of the four places around it, staying put, and (with {@code u_hasPrevious}) the motion
 	 * the block had in the previous frame, each refined by a pixel each way (keeping the previous
 	 * motion only has to fit as well as staying put, not 10% better), then
 	 * to a quarter pixel with a parabola through the neighbouring costs. Output: motion * 4 + 128 in r
-	 * and a, the mean error per pixel in g.
+	 * and a, the mean error per pixel in g. After a scene cut ({@code u_error}) there is no motion.
 	 */
 	private static final String REFINE = PRECISION
 			+ "uniform sampler2D u_prev;\n"
 			+ "uniform sampler2D u_curr;\n"
 			+ "uniform sampler2D u_coarse;\n"
 			+ "uniform sampler2D u_previous;\n"
+			+ "uniform sampler2D u_error;\n"
 			+ "uniform float u_hasPrevious;\n"
 			+ "uniform vec2 u_size;\n"
 			+ "uniform vec2 u_grid;\n"
@@ -268,6 +279,10 @@ final class GpuMotionSearch {
 			+ "    return clamp((sa - sb) / (2.0 * curve), -0.5, 0.5);\n"
 			+ "}\n"
 			+ "void main() {\n"
+			+ "    if (" + IS_CUT + ") {\n"
+			+ "        gl_FragColor = vec4(128.0 / 255.0, 0.0, 0.0, 128.0 / 255.0);\n"
+			+ "        return;\n"
+			+ "    }\n"
 			+ "    vec2 cell = floor(v_uv * u_grid);\n"
 			+ "    g_o = cell * 8.0;\n"
 			+ "    g_e = min(g_o + 8.0, u_size);\n"
@@ -293,6 +308,9 @@ final class GpuMotionSearch {
 			+ "        refine(guess(cc + vec2(1.0, 0.0)));\n"
 			+ "        refine(guess(cc + vec2(0.0, -1.0)));\n"
 			+ "        refine(guess(cc + vec2(0.0, 1.0)));\n"
+			// the guesses are 4 pixels apart: one more step around the best reaches as far as the
+			// CPU's refinement (2 pixels) where it matters
+			+ "        refine(g_bestD);\n"
 			+ "        bool moved = g_bestD.x != 0.0 || g_bestD.y != 0.0;\n"
 			+ "        bool kept = steady && abs(g_bestD.x - pg.x) <= 1.0 && abs(g_bestD.y - pg.y) <= 1.0;\n"
 			+ "        if (!moved || g_best <= zero * 0.9 || (kept && g_best <= zero)) {\n"
@@ -304,6 +322,38 @@ final class GpuMotionSearch {
 			+ "    }\n"
 			+ "    v = clamp(v, -127.0, 127.0);\n"
 			+ "    gl_FragColor = vec4((v.x + 128.0) / 255.0, err / (n.x * n.y), 0.0, (v.y + 128.0) / 255.0);\n"
+			+ "}\n";
+
+	/** How many blocks from the edges picture coming in can reach: the most it moves (32 pixels). */
+	private static final int EDGE_DEPTH = 4;
+	/** The same for the coarse search: 8 quarter-size pixels, two of its blocks. */
+	private static final int COARSE_EDGE_DEPTH = 2;
+
+	/**
+	 * Like {@link MotionEstimator#fillEdges}: a block near an edge whose picture was not found (it
+	 * came in from outside) takes the motion of the first block inside that depth.
+	 */
+	private static final String FILL = PRECISION
+			+ "uniform sampler2D u_src;\n"
+			+ "uniform vec2 u_grid;\n"
+			+ "uniform float u_depth;\n"
+			+ "varying vec2 v_uv;\n"
+			+ "void main() {\n"
+			+ "    vec2 c = floor(v_uv * u_grid);\n"
+			+ "    vec4 own = texture2D(u_src, (c + 0.5) / u_grid);\n"
+			+ "    vec2 t = c;\n"
+			+ "    if (c.x < u_depth) t.x = u_depth;\n"
+			+ "    else if (c.x >= u_grid.x - u_depth) t.x = u_grid.x - 1.0 - u_depth;\n"
+			+ "    if (c.y < u_depth) t.y = u_depth;\n"
+			+ "    else if (c.y >= u_grid.y - u_depth) t.y = u_grid.y - 1.0 - u_depth;\n"
+			+ "    if (u_grid.x > 2.0 * u_depth && u_grid.y > 2.0 * u_depth && (t.x != c.x || t.y != c.y)) {\n"
+			+ "        vec4 inner = texture2D(u_src, (t + 0.5) / u_grid);\n"
+			+ "        if (own.g * 255.0 > " + (MotionEstimator.POOR_MATCH / 16) + ".0 && own.g > 2.0 * inner.g) {\n"
+			+ "            gl_FragColor = vec4(inner.r, own.g, 0.0, inner.a);\n"
+			+ "            return;\n"
+			+ "        }\n"
+			+ "    }\n"
+			+ "    gl_FragColor = own;\n"
 			+ "}\n";
 
 	/** 3x3 median of the motion (r and a), so a single wrong block does not tear the picture. */
@@ -394,7 +444,9 @@ final class GpuMotionSearch {
 	private final int[] quarterTex = new int[FramePacer.KEPT];
 	private int coarseTex;
 	private int coarseMedianTex;
+	private int coarseFilledTex;
 	private int refinedTex;
+	private int filledTex;
 	/** Two textures in turn: the newest motion, and the one before it (the guess for the next). */
 	private final int[] forwardTex = new int[2];
 	private int current;
@@ -405,8 +457,11 @@ final class GpuMotionSearch {
 	private Pass coarse;
 	private Pass refine;
 	private Pass median;
+	private Pass fill;
 	private Pass error;
 	private final ByteBuffer pixel = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder());
+	/** The texture units the passes use, unbound after each pass (the last one left active). */
+	private static final int[] UNITS = {GL_TEXTURE4, GL_TEXTURE3, GL_TEXTURE2, GL_TEXTURE1, GL_TEXTURE0};
 
 	private GpuMotionSearch(int width, int height) {
 		this.width = width;
@@ -454,10 +509,12 @@ final class GpuMotionSearch {
 		refine = link(REFINE);
 		median = link(MEDIAN);
 		error = link(ERROR);
-		if (quarter == null || coarse == null || refine == null || median == null || error == null) {
+		fill = link(FILL);
+		if (quarter == null || coarse == null || refine == null || median == null || error == null
+				|| fill == null) {
 			return false;
 		}
-		int[] ids = new int[FramePacer.KEPT + 7];
+		int[] ids = new int[FramePacer.KEPT + 9];
 		glGenTextures(ids.length, ids, 0);
 		for (int i = 0; i < FramePacer.KEPT; i++) {
 			quarterTex[i] = texture(ids[i], quarterWidth, quarterHeight);
@@ -469,6 +526,8 @@ final class GpuMotionSearch {
 		forwardTex[1] = texture(ids[7], cols, rows);
 		backwardTex = texture(ids[8], cols, rows);
 		errorTex = texture(ids[9], 1, 1);
+		filledTex = texture(ids[10], cols, rows);
+		coarseFilledTex = texture(ids[11], coarseCols, coarseRows);
 		int[] fb = new int[1];
 		glGenFramebuffers(1, fb, 0);
 		fbo = fb[0];
@@ -578,34 +637,48 @@ final class GpuMotionSearch {
 		}
 	}
 
+	/** The mean match error of the last search, for {@link #IS_CUT} (a 1x1 texture). */
+	int errorTexture() {
+		return errorTex;
+	}
+
 	/**
 	 * Searches the motion from the frame in {@code prevSlot} to the one in {@code currSlot} (both
 	 * added with {@link #addFrame}), into {@link #forwardTexture()}; with {@code bothWays} also back
-	 * into {@link #backwardTexture()}.
+	 * into {@link #backwardTexture()}. Whether the frames are a scene cut is decided on the GPU too
+	 * ({@link #errorTexture()}; there is no motion then), so nothing waits for the GPU here.
 	 *
 	 * @param usePrevious offer the motion of the last search as a guess (when it was into the
 	 *                    previous frame: steady motion)
-	 * @return whether the two frames have nothing in common (a scene cut: do not interpolate)
 	 */
-	boolean search(int prevSlot, int prevTexture, int currSlot, int currTexture, boolean bothWays,
-				   boolean usePrevious) {
+	void search(int prevSlot, int prevTexture, int currSlot, int currTexture, boolean bothWays,
+				boolean usePrevious) {
 		boolean dither = noDither();
 		int previous = usePrevious ? forwardTex[current] : 0;
-		boolean cut = searchOneWay(prevSlot, prevTexture, currSlot, currTexture, forwardTex[1 - current],
-				true, previous);
-		if (!cut) {
-			current = 1 - current;
-		}
-		if (bothWays && !cut) {
+		searchOneWay(prevSlot, prevTexture, currSlot, currTexture, forwardTex[1 - current], true, previous);
+		current = 1 - current;
+		if (bothWays) {
 			searchOneWay(currSlot, currTexture, prevSlot, prevTexture, backwardTex, false, 0);
 		}
 		glActiveTexture(GL_TEXTURE0);
 		restoreDither(dither);
-		return cut;
 	}
 
-	private boolean searchOneWay(int fromSlot, int fromTexture, int toSlot, int toTexture, int target,
-								 boolean measure, int previous) {
+	/**
+	 * Whether the last search found a scene cut. It waits for the GPU to finish, so it is only for
+	 * tests: frame generation reads {@link #errorTexture()} in its shader instead.
+	 */
+	boolean readSceneCut() {
+		glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+		glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, errorTex, 0);
+		pixel.clear();
+		glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		return (pixel.get(0) & 0xFF) > SCENE_CUT_ERROR;
+	}
+
+	private void searchOneWay(int fromSlot, int fromTexture, int toSlot, int toTexture, int target,
+							  boolean measure, int previous) {
 		// coarse search on the quarter-size frames
 		begin(coarse, coarseTex, coarseCols, coarseRows);
 		bind(0, quarterTex[fromSlot], coarse.uniform("u_prev"));
@@ -613,35 +686,39 @@ final class GpuMotionSearch {
 		glUniform2f(coarse.uniform("u_size"), quarterWidth, quarterHeight);
 		glUniform2f(coarse.uniform("u_grid"), coarseCols, coarseRows);
 		end(coarse);
-		boolean cut = false;
 		if (measure) {
+			// the mean error, for the scene cut; the search back uses the one of the search forward
 			begin(error, errorTex, 1, 1);
 			bind(0, coarseTex, error.uniform("u_src"));
 			glUniform2f(error.uniform("u_grid"), coarseCols, coarseRows);
 			end(error);
-			pixel.clear();
-			glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
-			cut = (pixel.get(0) & 0xFF) > SCENE_CUT_ERROR;
-			if (cut) {
-				glBindFramebuffer(GL_FRAMEBUFFER, 0);
-				return true;
-			}
 		}
-		medianInto(coarseTex, coarseMedianTex, coarseCols, coarseRows);
+		fillInto(coarseTex, coarseFilledTex, coarseCols, coarseRows, COARSE_EDGE_DEPTH);
+		medianInto(coarseFilledTex, coarseMedianTex, coarseCols, coarseRows);
 		// refinement on the full-size frames
 		begin(refine, refinedTex, cols, rows);
 		bind(0, fromTexture, refine.uniform("u_prev"));
 		bind(1, toTexture, refine.uniform("u_curr"));
 		bind(2, coarseMedianTex, refine.uniform("u_coarse"));
 		bind(3, previous != 0 ? previous : coarseMedianTex, refine.uniform("u_previous"));
+		bind(4, errorTex, refine.uniform("u_error"));
 		glUniform1f(refine.uniform("u_hasPrevious"), previous != 0 ? 1f : 0f);
 		glUniform2f(refine.uniform("u_size"), width, height);
 		glUniform2f(refine.uniform("u_grid"), cols, rows);
 		glUniform2f(refine.uniform("u_coarseGrid"), coarseCols, coarseRows);
 		end(refine);
-		medianInto(refinedTex, target, cols, rows);
+		fillInto(refinedTex, filledTex, cols, rows, EDGE_DEPTH);
+		medianInto(filledTex, target, cols, rows);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-		return cut;
+	}
+
+	/** Picture coming in at the edges moves with the picture further in (see {@link #FILL}). */
+	private void fillInto(int source, int target, int w, int h, int depth) {
+		begin(fill, target, w, h);
+		bind(0, source, fill.uniform("u_src"));
+		glUniform2f(fill.uniform("u_grid"), w, h);
+		glUniform1f(fill.uniform("u_depth"), depth);
+		end(fill);
 	}
 
 	private void medianInto(int source, int target, int w, int h) {
@@ -675,7 +752,7 @@ final class GpuMotionSearch {
 		glDisableVertexAttribArray(pass.aPosition);
 		glDisableVertexAttribArray(pass.aUv);
 		// the targets are read by later passes: none may stay bound where a pass draws
-		for (int unit : new int[]{GL_TEXTURE3, GL_TEXTURE2, GL_TEXTURE1, GL_TEXTURE0}) {
+		for (int unit : UNITS) {
 			glActiveTexture(unit);
 			glBindTexture(GL_TEXTURE_2D, 0);
 		}
@@ -702,14 +779,14 @@ final class GpuMotionSearch {
 
 	/** Frees the GL objects. */
 	void release() {
-		for (Pass p : new Pass[]{quarter, coarse, refine, median, error}) {
+		for (Pass p : new Pass[]{quarter, coarse, refine, median, error, fill}) {
 			if (p != null) {
 				glDeleteProgram(p.id);
 			}
 		}
-		quarter = coarse = refine = median = error = null;
+		quarter = coarse = refine = median = error = fill = null;
 		int[] textures = {quarterTex[0], quarterTex[1], quarterTex[2], coarseTex, coarseMedianTex,
-				refinedTex, forwardTex[0], forwardTex[1], backwardTex, errorTex};
+				refinedTex, forwardTex[0], forwardTex[1], backwardTex, errorTex, filledTex, coarseFilledTex};
 		glDeleteTextures(textures.length, textures, 0);
 		if (fbo != 0) {
 			glDeleteFramebuffers(1, new int[]{fbo}, 0);

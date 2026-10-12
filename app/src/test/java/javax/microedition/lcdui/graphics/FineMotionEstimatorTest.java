@@ -166,4 +166,61 @@ public class FineMotionEstimatorTest {
 		System.out.println("FineMotionEstimator 240x320: " + perRun + " ms per estimate on this computer");
 		assertTrue("far too slow: " + perRun + " ms", perRun < 200);
 	}
+
+	@Test
+	public void blocksWherePictureCameInFromOutsideMoveWithTheRest() {
+		// a pan of 20 pixels: the first two columns of blocks came in from outside the picture
+		FineMotionEstimator e = new FineMotionEstimator(W, H);
+		MotionEstimator.Result r = e.estimate(picture(0, 0), picture(20, 0));
+		for (int by = 4; by < r.rows - 4; by++) {
+			for (int bx = 0; bx < 2; bx++) {
+				int i = (by * r.cols + bx) * 2;
+				assertEquals("block " + bx + "," + by, 20 * U, r.vectors[i], 2);
+				assertEquals(0, r.vectors[i + 1], 2);
+			}
+		}
+	}
+
+	@Test
+	public void plainMotionFindsMotionBetweenWholePixels() {
+		// the plain search on a picture of its own, moved 2.5 and 1.5 of its pixels
+		int w = W / 2, h = H / 2;
+		byte[] a = new byte[w * h], b = new byte[w * h];
+		for (int y = 0; y < h; y++) {
+			for (int x = 0; x < w; x++) {
+				a[y * w + x] = (byte) Math.round(scene(x, y));
+				b[y * w + x] = (byte) Math.round(scene(x - 2.5, y - 1.5));
+			}
+		}
+		MotionEstimator.Result r = new MotionEstimator(w, h, 8, 8, true).estimate(a, b);
+		int[] m = middleVector(r);
+		assertEquals(10, m[0], 1);
+		assertEquals(6, m[1], 1);
+		MotionEstimator.Result whole = new MotionEstimator(w, h, 8, 8).estimate(a, b);
+		int[] mw = middleVector(whole);
+		assertTrue("whole pixels: " + mw[0], mw[0] == 2 || mw[0] == 3);
+	}
+
+	@Test
+	public void onlyPoorlyMatchedEdgeBlocksTakeTheMotionFromInside() {
+		int cols = 10, rows = 10;
+		int[] vectors = new int[cols * rows * 2];
+		int[] errors = new int[cols * rows];
+		for (int b = 0; b < cols * rows; b++) {
+			vectors[b * 2] = 5;
+			vectors[b * 2 + 1] = 1;
+		}
+		// the left column came in from outside: a poor match and a wrong guess
+		for (int r = 0; r < rows; r++) {
+			vectors[(r * cols) * 2] = -7;
+			errors[r * cols] = MotionEstimator.POOR_MATCH * 3;
+		}
+		// one block at the right edge moves its own way, and was found well
+		vectors[(4 * cols + 9) * 2] = -3;
+		MotionEstimator.fillEdges(vectors, errors, cols, rows, 2);
+		for (int r = 0; r < rows; r++) {
+			assertEquals("row " + r, 5, vectors[(r * cols) * 2]);
+		}
+		assertEquals(-3, vectors[(4 * cols + 9) * 2]);
+	}
 }

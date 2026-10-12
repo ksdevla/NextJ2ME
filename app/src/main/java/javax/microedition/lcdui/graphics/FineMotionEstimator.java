@@ -45,6 +45,8 @@ public final class FineMotionEstimator {
 	private static final int REFINE = 2;
 	/** A block moves only if that makes it at least this much (fraction) better than staying put. */
 	private static final float GAIN = 0.90f;
+	/** How many blocks from the edges picture coming in can reach: the most it moves (32 pixels). */
+	private static final int EDGE_DEPTH = 4 * COARSE_RANGE / BLOCK;
 	/** Cost added per pixel of refinement away from a guess, so that ties go to the guess. */
 	private static final int PENALTY_PER_PIXEL = 2;
 
@@ -83,7 +85,12 @@ public final class FineMotionEstimator {
 
 	/** Full-size grey image from ARGB pixels. */
 	public static byte[] toGray(int[] argb, int width, int height) {
-		byte[] out = new byte[width * height];
+		return toGray(argb, width, height, null);
+	}
+
+	/** Like {@link #toGray(int[], int, int)}, into {@code reuse} when it has the right size. */
+	public static byte[] toGray(int[] argb, int width, int height, byte[] reuse) {
+		byte[] out = reuse != null && reuse.length == width * height ? reuse : new byte[width * height];
 		for (int i = 0; i < out.length; i++) {
 			int p = argb[i];
 			out[i] = (byte) ((((p >> 16) & 0xFF) * 77 + ((p >> 8) & 0xFF) * 151 + (p & 0xFF) * 28) >> 8);
@@ -119,14 +126,17 @@ public final class FineMotionEstimator {
 		if (rough.sceneCut) {
 			return new MotionEstimator.Result(cols, rows, vectors, true, rough.meanError);
 		}
-		RowBands.run(rows, helpers, parts, (from, to) -> refine(prev, curr, rough, last, from, to, vectors));
+		int[] errors = new int[cols * rows];
+		RowBands.run(rows, helpers, parts,
+				(from, to) -> refine(prev, curr, rough, last, from, to, vectors, errors));
+		MotionEstimator.fillEdges(vectors, errors, cols, rows, EDGE_DEPTH);
 		median(vectors);
 		return new MotionEstimator.Result(cols, rows, vectors, false, rough.meanError);
 	}
 
 	/** Refines the blocks of rows {@code fromRow} to {@code toRow}; touches only those rows' entries. */
 	private void refine(byte[] prev, byte[] curr, MotionEstimator.Result rough, int[] previous,
-						int fromRow, int toRow, int[] vectors) {
+						int fromRow, int toRow, int[] vectors, int[] errors) {
 		int[] guessX = new int[7];
 		int[] guessY = new int[7];
 		for (int by = fromRow; by < toRow; by++) {
@@ -136,6 +146,8 @@ public final class FineMotionEstimator {
 				int x1 = Math.min(x0 + BLOCK, width);
 				int y1 = Math.min(y0 + BLOCK, height);
 				int zero = sad(prev, curr, x0, y0, x1, y1, 0, 0, Integer.MAX_VALUE);
+				int pixels = (x1 - x0) * (y1 - y0);
+				errors[by * cols + bx] = MotionEstimator.errorOf(zero, pixels);
 				if (zero == 0) {
 					continue; // nothing changed here: it stays put
 				}
@@ -210,6 +222,7 @@ public final class FineMotionEstimator {
 				if ((bestDx != 0 || bestDy != 0) && bestSad > zero * GAIN && !(kept && bestSad <= zero)) {
 					continue; // moving is not clearly better than staying put
 				}
+				errors[by * cols + bx] = MotionEstimator.errorOf(bestSad, pixels);
 				// to a quarter pixel: the lowest point of a parabola through the neighbouring costs
 				float fx = subPixel(prev, curr, x0, y0, x1, y1, bestDx, bestDy, bestSad, 1, 0);
 				float fy = subPixel(prev, curr, x0, y0, x1, y1, bestDx, bestDy, bestSad, 0, 1);

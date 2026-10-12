@@ -27,9 +27,25 @@ public final class FrameClock {
 	/** A pause longer than this (a menu, a loading screen) does not count as the game's frame time. */
 	private static final long STALL = 400 * MS;
 
+	private final int weight;
+	/** Which way the last frame time was well off the expected one: -1, 0 or 1. */
+	private int lastOff;
 	private long arrival;
 	private long interval = 50 * MS;
 	private boolean measured;
+
+	public FrameClock() {
+		this(4);
+	}
+
+	/**
+	 * @param weight how slowly the frame time follows each new measurement: each counts for
+	 *               {@code 1 / weight}; one more than a quarter off, or the second in a row well
+	 *               off the same way (the game changed its pace), counts for at least a quarter
+	 */
+	FrameClock(int weight) {
+		this.weight = weight;
+	}
 
 	/** A new game frame was finished at {@code nowNanos}. */
 	public void onFrame(long nowNanos) {
@@ -38,7 +54,12 @@ public final class FrameClock {
 			if (gap > 0 && gap < STALL) {
 				long clamped = Math.max(MIN_INTERVAL, Math.min(MAX_INTERVAL, gap));
 				// the first measurement is taken as it is, the rest is smoothed
-				interval = measured ? (interval * 3 + clamped) / 4 : clamped;
+				long diff = clamped - interval;
+				int off = Math.abs(diff) > interval / 8 ? Long.signum(diff) : 0;
+				boolean changed = Math.abs(diff) > interval / 4 || (off != 0 && off == lastOff);
+				lastOff = off;
+				int w = changed ? Math.min(weight, 4) : weight;
+				interval = measured ? (interval * (w - 1) + clamped) / w : clamped;
 				measured = true;
 			}
 		}

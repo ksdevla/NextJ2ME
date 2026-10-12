@@ -73,6 +73,11 @@ public final class MotionEstimator {
 	private final int range;
 	private final int cols;
 	private final int rows;
+	/** Vectors in quarter pixels, found between whole pixels with a parabola; else whole pixels. */
+	private final boolean subPixel;
+
+	/** Units of a vector per pixel with sub-pixel motion. */
+	static final int SUB_UNITS = 4;
 
 	/**
 	 * @param width  width of the grey images
@@ -81,6 +86,15 @@ public final class MotionEstimator {
 	 * @param range  how far a block may move in either direction, in pixels
 	 */
 	public MotionEstimator(int width, int height, int block, int range) {
+		this(width, height, block, range, false);
+	}
+
+	/**
+	 * @param subPixel give the vectors in quarter pixels ({@link #SUB_UNITS} per pixel), the motion
+	 *                 between whole pixels found with a parabola through the neighbouring matches;
+	 *                 otherwise in whole pixels
+	 */
+	public MotionEstimator(int width, int height, int block, int range, boolean subPixel) {
 		if (width < block || height < block || block < 2 || range < 1) {
 			throw new IllegalArgumentException("image too small for the block size");
 		}
@@ -90,6 +104,7 @@ public final class MotionEstimator {
 		this.range = range;
 		this.cols = (width + block - 1) / block;
 		this.rows = (height + block - 1) / block;
+		this.subPixel = subPixel;
 	}
 
 	public int cols() {
@@ -102,9 +117,14 @@ public final class MotionEstimator {
 
 	/** Grey image at half size (2x2 pixels averaged) from ARGB pixels. */
 	public static byte[] toGray(int[] argb, int width, int height) {
+		return toGray(argb, width, height, null);
+	}
+
+	/** Like {@link #toGray(int[], int, int)}, into {@code reuse} when it has the right size. */
+	public static byte[] toGray(int[] argb, int width, int height, byte[] reuse) {
 		int gw = width / 2;
 		int gh = height / 2;
-		byte[] out = new byte[gw * gh];
+		byte[] out = reuse != null && reuse.length == gw * gh ? reuse : new byte[gw * gh];
 		for (int y = 0; y < gh; y++) {
 			int row0 = (2 * y) * width;
 			int row1 = row0 + width;
@@ -149,10 +169,11 @@ public final class MotionEstimator {
 		}
 		final int[] guesses = previous;
 		int[] vectors = new int[cols * rows * 2];
+		int[] errors = new int[cols * rows];
 		long[] bestPerRow = new long[rows];
 		long[] zeroPerRow = new long[rows];
 		RowBands.run(rows, helpers, parts,
-				(from, to) -> search(prev, curr, from, to, vectors, bestPerRow, zeroPerRow, guesses));
+				(from, to) -> search(prev, curr, from, to, vectors, errors, bestPerRow, zeroPerRow, guesses));
 		long totalBest = 0;
 		long totalZero = 0;
 		for (int by = 0; by < rows; by++) {
@@ -165,6 +186,8 @@ public final class MotionEstimator {
 		if (totalZero / pixels < 1.0f) {
 			Arrays.fill(vectors, 0); // nothing moved
 		} else {
+			// picture coming in at the edges moves at most the search range in
+			fillEdges(vectors, errors, cols, rows, (range + block - 1) / block);
 			median(vectors);
 		}
 		return new Result(cols, rows, vectors, sceneCut, meanError);
@@ -182,7 +205,7 @@ public final class MotionEstimator {
 		int guessDx;
 		int guessDy;
 
-		void reset(int zero, int[] previous, int i) {
+		void reset(int zero, int[] previous, int i, int units) {
 			this.zero = zero;
 			this.limit = (int) (zero * GAIN);
 			bestCost = zero;
@@ -190,8 +213,8 @@ public final class MotionEstimator {
 			bestDx = 0;
 			bestDy = 0;
 			// the search looks for where a block came from: the opposite of its motion
-			guessDx = previous == null ? 0 : -previous[i];
-			guessDy = previous == null ? 0 : -previous[i + 1];
+			guessDx = previous == null ? 0 : -Math.round(previous[i] / (float) units);
+			guessDy = previous == null ? 0 : -Math.round(previous[i + 1] / (float) units);
 			steady = guessDx != 0 || guessDy != 0;
 		}
 
@@ -226,7 +249,7 @@ public final class MotionEstimator {
 	}
 
 	/** Searches the blocks of rows {@code fromRow} to {@code toRow}; touches only those rows' entries. */
-	private void search(byte[] prev, byte[] curr, int fromRow, int toRow, int[] vectors,
+	private void search(byte[] prev, byte[] curr, int fromRow, int toRow, int[] vectors, int[] errors,
 						long[] bestPerRow, long[] zeroPerRow, int[] previous) {
 		Match m = new Match();
 		for (int by = fromRow; by < toRow; by++) {
@@ -239,7 +262,7 @@ public final class MotionEstimator {
 				int y1 = Math.min(y0 + block, height);
 				int zero = sad(prev, curr, x0, y0, x1, y1, 0, 0, Integer.MAX_VALUE);
 				int i = (by * cols + bx) * 2;
-				m.reset(zero, previous, i);
+				m.reset(zero, previous, i, subPixel ? SUB_UNITS : 1);
 				if (zero > 0) {
 					int minDx = Math.max(-range, -x0);
 					int maxDx = Math.min(range, width - x1);
@@ -267,13 +290,43 @@ public final class MotionEstimator {
 				}
 				rowBest += m.best;
 				rowZero += zero;
+				errors[by * cols + bx] = errorOf(m.best, (x1 - x0) * (y1 - y0));
 				// curr(x) matches prev(x + d), so the picture moved by -d
-				vectors[i] = -m.bestDx;
-				vectors[i + 1] = -m.bestDy;
+				if (subPixel) {
+					// between whole pixels: the lowest point of a parabola through the neighbours
+					float fx = subPixel(prev, curr, x0, y0, x1, y1, m.bestDx, m.bestDy, m.best, 1, 0);
+					float fy = subPixel(prev, curr, x0, y0, x1, y1, m.bestDx, m.bestDy, m.best, 0, 1);
+					vectors[i] = -Math.round((m.bestDx + fx) * SUB_UNITS);
+					vectors[i + 1] = -Math.round((m.bestDy + fy) * SUB_UNITS);
+				} else {
+					vectors[i] = -m.bestDx;
+					vectors[i + 1] = -m.bestDy;
+				}
 			}
 			bestPerRow[by] = rowBest;
 			zeroPerRow[by] = rowZero;
 		}
+	}
+
+	/** Offset (-0.5 to 0.5) of the true best match from the whole pixel (dx, dy), along (ux, uy). */
+	private float subPixel(byte[] prev, byte[] curr, int x0, int y0, int x1, int y1,
+						   int dx, int dy, int s0, int ux, int uy) {
+		if (s0 == 0) {
+			return 0f; // an exact match
+		}
+		int ax = dx - ux, ay = dy - uy, bx = dx + ux, by = dy + uy;
+		if (x0 + Math.min(ax, bx) < 0 || x1 + Math.max(ax, bx) > width
+				|| y0 + Math.min(ay, by) < 0 || y1 + Math.max(ay, by) > height) {
+			return 0f;
+		}
+		int sa = sad(prev, curr, x0, y0, x1, y1, ax, ay, Integer.MAX_VALUE);
+		int sb = sad(prev, curr, x0, y0, x1, y1, bx, by, Integer.MAX_VALUE);
+		int curve = sa - 2 * s0 + sb;
+		if (curve <= 0) {
+			return 0f;
+		}
+		float f = (float) (sa - sb) / (2 * curve);
+		return Math.max(-0.5f, Math.min(0.5f, f));
 	}
 
 	/**
@@ -295,6 +348,45 @@ public final class MotionEstimator {
 		}
 		return sum;
 	}
+
+	/**
+	 * Blocks near the edges of the picture whose picture came in from outside it can not be found
+	 * in the previous frame, so their match is poor and their motion is a guess. Up to
+	 * {@code depth} blocks from an edge, such a block takes the motion of the first block inside
+	 * that depth (in a pan the whole picture moves together); a block that matched well keeps its
+	 * own motion.
+	 *
+	 * @param error the match error of each block, {@link #errorOf} of its sum of differences
+	 */
+	static void fillEdges(int[] vectors, int[] error, int cols, int rows, int depth) {
+		if (cols <= 2 * depth || rows <= 2 * depth) {
+			return; // too small to have an inside
+		}
+		int[] src = vectors.clone();
+		for (int r = 0; r < rows; r++) {
+			int tr = r < depth ? depth : r >= rows - depth ? rows - 1 - depth : r;
+			for (int c = 0; c < cols; c++) {
+				int tc = c < depth ? depth : c >= cols - depth ? cols - 1 - depth : c;
+				if (tc == c && tr == r) {
+					continue;
+				}
+				int b = r * cols + c;
+				int t = tr * cols + tc;
+				if (error[b] > POOR_MATCH && error[b] > 2 * error[t]) {
+					vectors[b * 2] = src[t * 2];
+					vectors[b * 2 + 1] = src[t * 2 + 1];
+				}
+			}
+		}
+	}
+
+	/** The match error of a block: its mean difference per pixel, in sixteenths (0..4080). */
+	static int errorOf(int sad, int pixels) {
+		return pixels == 0 ? 0 : sad * 16 / pixels;
+	}
+
+	/** A match error ({@link #errorOf}) above which a block's picture was not really found. */
+	static final int POOR_MATCH = 10 * 16;
 
 	/** 3x3 median of each component, so a single wrong block does not tear the picture. */
 	private void median(int[] vectors) {

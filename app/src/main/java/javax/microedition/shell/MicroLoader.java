@@ -287,6 +287,8 @@ public class MicroLoader {
 			Canvas.setFrameGenerationCleanEdges(params.frameGenerationCleanEdges);
 			Canvas.setFrameGenerationGpu(params.frameGenerationGpu);
 			Canvas.setFrameGenerationSteady(params.frameGenerationSteady);
+			Canvas.setFrameGenerationEvenPacing(params.frameGenerationEvenPacing);
+			Canvas.setFrameGenerationLowLatency(params.frameGenerationLowLatency);
 			Canvas.setFrameGenerationFps(params.frameGenerationFps);
 			Render3DSettings.setSupersampling(params.render3dQuality > 0 ? params.render3dQuality + 1 : 1);
 

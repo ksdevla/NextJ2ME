@@ -27,9 +27,12 @@ import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.RectF;
+import android.opengl.EGL14;
+import android.opengl.EGLExt;
 import android.opengl.GLES20;
 import android.opengl.GLSurfaceView;
 import android.opengl.GLUtils;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.DisplayMetrics;
@@ -138,12 +141,15 @@ public abstract class Canvas extends Displayable {
 	private static boolean frameGenerationCleanEdges;
 	private static boolean frameGenerationGpu;
 	private static boolean frameGenerationSteady;
+	/** Whether frame generation places each picture for the screen refresh that shows it. */
+	private static boolean frameGenerationEvenPacing;
+	/** Whether frame generation shows each game frame at once and carries it on (low latency). */
+	private static boolean frameGenerationLowLatency;
 	/** Pictures per second frame generation shows; 0 = on every screen refresh. */
 	private static int frameGenerationFps;
 	/**
-	 * Without a new game frame for this long, frame generation stops redrawing on every refresh. It
-	 * is longer than the longest frame time the blend follows (250 ms), so the newest frame is
-	 * already fully shown.
+	 * Without a new game frame for this long, frame generation stops redrawing on every refresh,
+	 * once the newest frame is fully shown.
 	 */
 	private static final long FRAME_IDLE_NANOS = 300_000_000L;
 	private static boolean screenshotRawMode;
@@ -267,6 +273,19 @@ public abstract class Canvas extends Displayable {
 	/** Whether frame generation offers the motion of the previous frame as a guess (steady motion). */
 	public static void setFrameGenerationSteady(boolean steady) {
 		Canvas.frameGenerationSteady = steady;
+	}
+
+	/** Whether frame generation places each picture for the screen refresh that shows it (even pacing). */
+	public static void setFrameGenerationEvenPacing(boolean evenPacing) {
+		Canvas.frameGenerationEvenPacing = evenPacing;
+	}
+
+	/**
+	 * Whether frame generation shows each game frame as soon as it comes and carries it on along
+	 * its motion (low latency), instead of showing it a frame later.
+	 */
+	public static void setFrameGenerationLowLatency(boolean lowLatency) {
+		Canvas.frameGenerationLowLatency = lowLatency;
 	}
 
 	/**
@@ -583,9 +602,10 @@ public abstract class Canvas extends Displayable {
 			if (graphicsMode == 1) {
 				GlesView glesView = new GlesView(activity);
 				glesView.setRenderer(renderer);
-				// at a chosen rate the driver asks for each picture; otherwise every refresh draws
+				// at a chosen rate (or with even pacing) the driver asks for each picture; otherwise
+				// every refresh draws
 				FrameRateDriver driver = frameGeneration == 0 ? null
-						: FrameRateDriver.create(glesView, frameGenerationFps);
+						: FrameRateDriver.create(glesView, frameGenerationFps, frameGenerationEvenPacing);
 				if (driver != null) {
 					driver.requestScreenRate(activity);
 					renderer.setFrameRateDriver(driver);
@@ -841,10 +861,12 @@ public abstract class Canvas extends Displayable {
 		private FrameGenerator frameGenerator;
 		/** Whether the view redraws on every screen refresh (only touched on the GL thread). */
 		private boolean redrawEveryRefresh;
-		/** Asks for pictures at the chosen rate instead; null when drawing on every refresh. */
+		/** Asks for pictures at the chosen rate or with even pacing; null when drawing on every refresh. */
 		private FrameRateDriver frameRateDriver;
 		private final AtomicInteger frameCounter = new AtomicInteger();
 		private volatile long frameNanos;
+		/** When the picture just drawn should be shown (even pacing), or 0 to leave it to Android. */
+		private long presentNanos;
 		private int surfaceWidth;
 		private int surfaceHeight;
 
@@ -869,7 +891,7 @@ public abstract class Canvas extends Displayable {
 			}
 			frameGenerator = frameGeneration == 0 ? null : FrameGenerator.create(frameGeneration, filter,
 					frameGenerationMultiCore, frameGenerationCleanEdges, frameGenerationGpu,
-					frameGenerationSteady);
+					frameGenerationSteady, frameGenerationLowLatency, frameGenerationEvenPacing);
 			if (frameGeneration != 0 && frameGenerator == null) {
 				stopFrameGeneration("the device could not build the frame generation shader");
 			} else if (frameGenerator != null) {
@@ -896,6 +918,9 @@ public abstract class Canvas extends Displayable {
 				}
 			}
 			glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+			if (generated && presentNanos != 0) {
+				setPresentationTime(presentNanos);
+			}
 			if (fpsCounter != null) {
 				fpsCounter.increment();
 			}
@@ -910,9 +935,22 @@ public abstract class Canvas extends Displayable {
 			Bitmap frame = offscreenCopy.getBitmap();
 			long now = System.nanoTime();
 			long lastFrame = frameNanos;
+			// with even pacing the picture is placed for its screen refresh, not for when drawing
+			// happened to start, so moving things advance by the same distance on every refresh
+			long pictureTime = now;
+			presentNanos = 0;
+			if (frameRateDriver != null && frameRateDriver.pacesEvenly()) {
+				pictureTime = frameRateDriver.pictureTime(now);
+				long refresh = frameRateDriver.refreshNanos();
+				if (refresh > 0) {
+					// not before the refresh after its own, the earliest it can be shown anyway
+					presentNanos = pictureTime + refresh;
+				}
+			}
 			int texture = 0;
 			try {
-				texture = frameGenerator.render(frame, bufferLock, frameCounter.get(), lastFrame, now);
+				texture = frameGenerator.render(frame, bufferLock, frameCounter.get(), lastFrame,
+						pictureTime);
 			} catch (RuntimeException e) {
 				Log.e(TAG, "frame generation failed", e);
 			}
@@ -920,9 +958,11 @@ public abstract class Canvas extends Displayable {
 				// A game that stops drawing (paused, a still menu) needs no new pictures: once the
 				// blend has reached its newest frame, wait for the game's next frame (requestRender
 				// wakes the view up) instead of redrawing on every refresh.
-				boolean gameIsDrawing = now - lastFrame < FRAME_IDLE_NANOS;
-				if (gameIsDrawing != redrawEveryRefresh) {
-					setRedrawEveryRefresh(gameIsDrawing);
+				// The blend of a slow game can take longer than the wait (with the motion's delay),
+				// so the last picture must also be the newest frame as it is.
+				boolean keepDrawing = now - lastFrame < FRAME_IDLE_NANOS || !frameGenerator.isSettled();
+				if (keepDrawing != redrawEveryRefresh) {
+					setRedrawEveryRefresh(keepDrawing);
 				}
 				glViewport(0, 0, surfaceWidth, surfaceHeight);
 				glUseProgram(program.id);
@@ -939,6 +979,24 @@ public abstract class Canvas extends Displayable {
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, bgTextureId[0]);
 			return false;
+		}
+
+		/**
+		 * Tells Android when the picture being drawn should be shown. A picture that is late is
+		 * then dropped in favour of a newer one that is due, instead of both being shown one after
+		 * the other a refresh late.
+		 */
+		private void setPresentationTime(long nanos) {
+			if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN_MR2) {
+				return;
+			}
+			try {
+				EGLExt.eglPresentationTimeANDROID(EGL14.eglGetCurrentDisplay(),
+						EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW), nanos);
+			} catch (RuntimeException e) {
+				// only a wish: Android shows the picture when it is ready
+				presentNanos = 0;
+			}
 		}
 
 		/** Goes back to drawing only when the game finishes a frame. */

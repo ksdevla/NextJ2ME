@@ -138,7 +138,8 @@ public class GpuMotionSearchTest {
 		int b = texture(curr, W, H);
 		s.addFrame(0, a);
 		s.addFrame(1, b);
-		boolean c = s.search(0, a, 1, b, true, usePrevious);
+		s.search(0, a, 1, b, true, usePrevious);
+		boolean c = s.readSceneCut();
 		if (cut != null) {
 			cut[0] = c;
 		}
@@ -224,6 +225,11 @@ public class GpuMotionSearchTest {
 		boolean[] cut = new boolean[1];
 		search(s, gray(W, H, 0, 0), squares, cut);
 		assertTrue(cut[0]);
+		for (boolean backward : new boolean[]{false, true}) {
+			for (int value : s.readVectors(backward)) {
+				assertEquals("no motion across a scene cut", 0, value);
+			}
+		}
 		boolean[] noCut = new boolean[1];
 		search(s, gray(W, H, 0, 0), gray(W, H, 3, 3), noCut);
 		assertFalse(noCut[0]);

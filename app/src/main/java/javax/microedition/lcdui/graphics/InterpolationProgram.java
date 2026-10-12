@@ -68,13 +68,35 @@ final class InterpolationProgram {
 	 * best one disagrees, the motion is wrong there (too fast to follow, or something appeared): those
 	 * pixels fall back to a plain cross-fade, which looks soft instead of torn.
 	 * <p>
+	 * Picture coming in at an edge of the screen is only in one of the frames: a motion that
+	 * takes a pixel from outside one frame is taken from the other one alone (see {@link #UNSEEN}).
+	 * <p>
 	 * With {@code u_cleanEdges}, such a pixel is first checked for being next to a moving object,
 	 * using the motion both ways ({@code u_motion}: old to new, on the new frame's blocks;
 	 * {@code u_motionBack}: new to old, on the old frame's blocks). Background the object uncovers
 	 * exists only in the new frame: the place it comes from in the old frame tells a different
 	 * story. Background the object covers exists only in the old frame. Such pixels are taken from
 	 * the one frame where they can be seen, instead of being cross-faded with the object.
+	 * <p>
+	 * A blend position {@code u_t} above 1 (low latency) means a picture past the newest frame:
+	 * the newest frame moved on along the motion, by {@code u_t - 1} of a frame. The motions are
+	 * tried the same way: the one under which the newest frame and the frame before it agree, a
+	 * frame further back along the same path, wins. Only the newest frame is shown, so agreeing
+	 * colours alone can not tell apart motions inside a flat area. Among motions that agree about
+	 * as well, the one of the block the picture is taken from wins, so an object is not bent by
+	 * the motion of what is next to it; it only breaks ties, as a block's motion can be wrong where
+	 * the colours tell better. Where no motion agrees, the best one is used all the same.
+	 * <p>
+	 * With the GPU search ({@code u_useError}), a scene cut found on the GPU shows the newest frame
+	 * as it is.
 	 */
+	/**
+	 * The mismatch given to a motion that takes a pixel from outside one of the frames: the picture
+	 * coming in at an edge (or going out) is only in the other frame, so the motion can not be
+	 * checked there and that frame alone is used. A motion that both frames confirm still wins.
+	 */
+	private static final String UNSEEN = "0.05";
+
 	private static final String FRAGMENT =
 			"#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
 					+ "precision highp float;\n"
@@ -85,6 +107,8 @@ final class InterpolationProgram {
 					+ "uniform sampler2D u_curr;\n"
 					+ "uniform sampler2D u_motion;\n"
 					+ "uniform sampler2D u_motionBack;\n"
+					+ "uniform sampler2D u_error;\n"
+					+ "uniform float u_useError;\n"
 					+ "uniform float u_t;\n"
 					+ "uniform float u_useMotion;\n"
 					+ "uniform float u_motionUnit;\n"
@@ -118,11 +142,34 @@ final class InterpolationProgram {
 					+ "float pixels(vec2 d) {\n"
 					+ "    return length(d * u_texSize);\n"
 					+ "}\n"
+					+ "bool inside(vec2 uv) {\n"
+					+ "    return uv.x >= 0.0 && uv.y >= 0.0 && uv.x <= 1.0 && uv.y <= 1.0;\n"
+					+ "}\n"
 					+ "float mismatch(vec2 mv) {\n"
-					+ "    g_a = texture2D(u_prev, v_uv - mv * u_t);\n"
-					+ "    g_b = texture2D(u_curr, v_uv + mv * (1.0 - u_t));\n"
-					+ "    vec3 d = abs(g_a.rgb - g_b.rgb);\n"
-					+ "    return max(max(d.r, d.g), d.b);\n"
+					+ "    vec2 pa = v_uv - mv * u_t;\n"
+					+ "    vec2 pb = v_uv + mv * (1.0 - u_t);\n"
+					+ "    g_a = texture2D(u_prev, pa);\n"
+					+ "    g_b = texture2D(u_curr, pb);\n"
+					+ "    float e;\n"
+					+ "    bool ina = inside(pa);\n"
+					+ "    bool inb = inside(pb);\n"
+					+ "    if (ina && inb) {\n"
+					+ "        vec3 d = abs(g_a.rgb - g_b.rgb);\n"
+					+ "        e = max(max(d.r, d.g), d.b);\n"
+					+ "    } else if (inb) {\n"
+					+ "        g_a = g_b;\n"
+					+ "        e = " + UNSEEN + ";\n"
+					+ "    } else if (ina) {\n"
+					+ "        g_b = g_a;\n"
+					+ "        e = " + UNSEEN + ";\n"
+					+ "    } else {\n"
+					+ "        e = 1.0;\n"
+					+ "    }\n"
+					+ "    if (u_t > 1.0) {\n"
+					+ "        e += 0.03 * smoothstep(0.5, 1.5,\n"
+					+ "                pixels(newMotionAt(v_uv + mv * (1.0 - u_t)) - mv));\n"
+					+ "    }\n"
+					+ "    return e;\n"
 					+ "}\n"
 					+ "void tryBlock(vec2 cell) {\n"
 					+ "    float e = mismatch(blockMotion(cell));\n"
@@ -133,7 +180,12 @@ final class InterpolationProgram {
 					+ "    }\n"
 					+ "}\n"
 					+ "void main() {\n"
-					+ "    vec4 plain = mix(texture2D(u_prev, v_uv), texture2D(u_curr, v_uv), u_t);\n"
+					+ "    if (u_useError > 0.5 && " + GpuMotionSearch.IS_CUT + ") {\n"
+					+ "        gl_FragColor = texture2D(u_curr, v_uv);\n"
+					+ "        return;\n"
+					+ "    }\n"
+					+ "    float tc = min(u_t, 1.0);\n"
+					+ "    vec4 plain = mix(texture2D(u_prev, v_uv), texture2D(u_curr, v_uv), tc);\n"
 					+ "    if (u_useMotion < 0.5) {\n"
 					+ "        gl_FragColor = plain;\n"
 					+ "        return;\n"
@@ -167,8 +219,8 @@ final class InterpolationProgram {
 					+ "        tryBlock(i + vec2(2.0, 2.0));\n"
 					+ "    }\n"
 					+ "    float agree = 1.0 - smoothstep(0.06, 0.2, g_best);\n"
-					+ "    vec4 fallback = plain;\n"
-					+ "    if (u_cleanEdges > 0.5 && agree < 0.999) {\n"
+					+ "    vec4 fallback = u_t > 1.0 ? g_bestB : plain;\n"
+					+ "    if (u_cleanEdges > 0.5 && u_t <= 1.0 && agree < 0.999) {\n"
 					+ "        vec2 mn = newMotionAt(v_uv);\n"
 					+ "        vec2 pn = v_uv + mn * (1.0 - u_t);\n"
 					+ "        vec2 fn = newMotionAt(pn);\n"
@@ -183,7 +235,7 @@ final class InterpolationProgram {
 					+ "            fallback = texture2D(u_prev, po);\n"
 					+ "        }\n"
 					+ "    }\n"
-					+ "    gl_FragColor = mix(fallback, mix(g_bestA, g_bestB, u_t), agree);\n"
+					+ "    gl_FragColor = mix(fallback, mix(g_bestA, g_bestB, tc), agree);\n"
 					+ "}\n";
 
 	final int id;
@@ -193,6 +245,8 @@ final class InterpolationProgram {
 	final int uCurr;
 	final int uMotion;
 	final int uMotionBack;
+	final int uError;
+	final int uUseError;
 	final int uCleanEdges;
 	final int uT;
 	final int uUseMotion;
@@ -210,6 +264,8 @@ final class InterpolationProgram {
 		uCurr = glGetUniformLocation(id, "u_curr");
 		uMotion = glGetUniformLocation(id, "u_motion");
 		uMotionBack = glGetUniformLocation(id, "u_motionBack");
+		uError = glGetUniformLocation(id, "u_error");
+		uUseError = glGetUniformLocation(id, "u_useError");
 		uCleanEdges = glGetUniformLocation(id, "u_cleanEdges");
 		uT = glGetUniformLocation(id, "u_t");
 		uUseMotion = glGetUniformLocation(id, "u_useMotion");

@@ -112,6 +112,14 @@ public class ProfileModel {
 	@SerializedName("FrameGenerationSteady")
 	public boolean frameGenerationSteady;
 
+	/** Whether frame generation places each picture for the screen refresh that shows it. */
+	@SerializedName("FrameGenerationEvenPacing")
+	public boolean frameGenerationEvenPacing;
+
+	/** Whether frame generation shows each game frame at once and carries it on (low latency). */
+	@SerializedName("FrameGenerationLowLatency")
+	public boolean frameGenerationLowLatency;
+
 	/** Pictures per second frame generation shows; 0 = on every screen refresh. */
 	@SerializedName("FrameGenerationFps")
 	public int frameGenerationFps;
