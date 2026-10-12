@@ -223,4 +223,42 @@ public class FineMotionEstimatorTest {
 		}
 		assertEquals(-3, vectors[(4 * cols + 9) * 2]);
 	}
+
+	@Test
+	public void ultraFollowsMotionBeyond32Pixels() {
+		MotionEstimator.Result quality = new FineMotionEstimator(W, H).estimate(picture(0, 0), picture(44.5, -6.25));
+		MotionEstimator.Result ultra = new FineMotionEstimator(W, H, true).estimate(picture(0, 0), picture(44.5, -6.25));
+		int[] u = middleVector(ultra);
+		assertEquals(Math.round(44.5f * U), u[0], 2);
+		assertEquals(Math.round(-6.25f * U), u[1], 2);
+		assertTrue("Quality can not reach it", Math.abs(middleVector(quality)[0] - 44.5 * U) > 4 * U);
+	}
+
+	/** A band of a pattern repeating every 16 pixels across the middle, the rest without repeats. */
+	private static byte[] fence(double mx) {
+		byte[] out = new byte[W * H];
+		for (int y = 0; y < H; y++) {
+			for (int x = 0; x < W; x++) {
+				double v = y >= 110 && y < 210
+						? 128 + 80 * Math.sin((x - mx) * 2 * Math.PI / 16)
+						: scene(x - mx, y);
+				out[y * W + x] = (byte) Math.max(0, Math.min(255, Math.round(v)));
+			}
+		}
+		return out;
+	}
+
+	@Test
+	public void aRepeatingBandMovesTheWayTheRestOfThePictureDoes() {
+		// moving 11.25 or 4.75 back fits the band equally; the rest of the picture tells which
+		MotionEstimator.Result r = new FineMotionEstimator(W, H).estimate(fence(0), fence(11.25));
+		int right = 0, n = 0;
+		for (int by = 15; by < 25; by++) {
+			for (int bx = 4; bx < r.cols - 4; bx++) {
+				n++;
+				right += Math.abs(r.vectors[(by * r.cols + bx) * 2] - 45) <= 2 ? 1 : 0;
+			}
+		}
+		assertTrue("blocks of the band moving the right way: " + right + " of " + n, right >= n * 9 / 10);
+	}
 }

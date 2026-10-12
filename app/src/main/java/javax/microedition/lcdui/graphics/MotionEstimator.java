@@ -54,16 +54,30 @@ public final class MotionEstimator {
 		}
 
 		/**
-		 * The vectors as bytes for a two-channel texture: {@code dx * scale + 128} and
-		 * {@code dy * scale + 128}, limited to 1..255, so the shader can read them back.
+		 * The vectors as bytes for a two-channel texture: the {@link MotionCode} of
+		 * {@code dx * scale} and {@code dy * scale} (quarter pixels) plus 128, so the shader can read
+		 * them back.
 		 */
 		public byte[] encode(int scale) {
+			return encode(scale, MotionCode.EXACT);
+		}
+
+		/** Like {@link #encode(int)}, coded with {@code linear} ({@link MotionCode}). */
+		public byte[] encode(int scale, int linear) {
 			byte[] out = new byte[cols * rows * 2];
 			for (int i = 0; i < vectors.length; i++) {
-				int v = Math.max(-127, Math.min(127, vectors[i] * scale)) + 128;
-				out[i] = (byte) v;
+				out[i] = (byte) (MotionCode.encode(vectors[i] * scale, linear) + 128);
 			}
 			return out;
+		}
+
+		/** The largest component of any vector, either way. */
+		public int largest() {
+			int max = 0;
+			for (int v : vectors) {
+				max = Math.max(max, Math.abs(v));
+			}
+			return max;
 		}
 	}
 

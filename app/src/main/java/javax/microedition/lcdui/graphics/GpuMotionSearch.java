@@ -92,7 +92,8 @@ import java.nio.FloatBuffer;
  * steps as {@link FineMotionEstimator} (a coarse search on quarter-size frames, then a refinement of
  * 8x8 blocks of the full-size frames to a quarter pixel, then a 3x3 median), each block worked out
  * by one fragment. The result stays on the GPU, in a texture the interpolation shader reads like
- * the CPU's motion texture: the motion plus 128 in the red and alpha channels, in quarter pixels.
+ * the CPU's motion texture: the {@link MotionCode} of the motion (quarter pixels) plus 128 in the
+ * red and alpha channels.
  * Nothing comes back to the CPU: even whether the frames are a scene cut is decided by the shaders
  * (a 1x1 texture with the mean match error), as reading anything back would make the CPU wait for
  * the GPU on every game frame.
@@ -101,6 +102,8 @@ import java.nio.FloatBuffer;
  */
 final class GpuMotionSearch {
 	private static final String TAG = GpuMotionSearch.class.getName();
+	/** A block takes the motion of the whole picture if that fits within this much of its own. */
+	private static final String TIE_FACTOR = "1.05";
 	/** Side of a refined block, in game pixels; vectors are in quarter pixels. */
 	static final int BLOCK = 8;
 	static final int UNITS_PER_PIXEL = 4;
@@ -146,7 +149,8 @@ final class GpuMotionSearch {
 	 * Coarse search on the quarter-size frames, one 4x4 block per fragment, up to 8 pixels each way
 	 * (32 game pixels): like {@link MotionEstimator}, a move must beat staying put by 10% and costs
 	 * a little per pixel moved. The older frame is compared with its change of brightness applied
-	 * ({@code u_mapPrev} or {@code u_mapCurr}: gain and offset, see {@link Brightness}). Output: motion + 128 in r and a (quarter-size pixels), the mean
+	 * ({@code u_mapPrev} or {@code u_mapCurr}: gain and offset, see {@link Brightness}). It looks
+	 * RANGE pixels each way: 8, or 16 with Ultra (64 game pixels). Output: motion + 128 in r and a (quarter-size pixels), the mean
 	 * error per pixel in g.
 	 */
 	private static final String COARSE = PRECISION
@@ -184,8 +188,8 @@ final class GpuMotionSearch {
 			+ "    vec2 bestD = vec2(0.0);\n"
 			+ "    if (zero > 0.0) {\n"
 			+ "        float limit = zero * 0.9;\n"
-			+ "        for (int dy = -8; dy <= 8; dy++) {\n"
-			+ "            for (int dx = -8; dx <= 8; dx++) {\n"
+			+ "        for (int dy = -RANGE; dy <= RANGE; dy++) {\n"
+			+ "            for (int dx = -RANGE; dx <= RANGE; dx++) {\n"
 			+ "                vec2 d = vec2(float(dx), float(dy));\n"
 			+ "                if (dx == 0 && dy == 0) continue;\n"
 			+ "                if (o.x + d.x < 0.0 || o.y + d.y < 0.0 || e.x + d.x > u_size.x || e.y + d.y > u_size.y) continue;\n"
@@ -215,22 +219,20 @@ final class GpuMotionSearch {
 	 * place and of the four places around it, staying put, and (with {@code u_hasPrevious}) the motion
 	 * the block had in the previous frame, each refined by a pixel each way (keeping the previous
 	 * motion only has to fit as well as staying put, not 10% better), then
-	 * to a quarter pixel with a parabola through the neighbouring costs. Output: motion * 4 + 128 in r
-	 * and a, the mean error per pixel in g. After a scene cut ({@code u_error}) there is no motion.
+	 * to a quarter pixel with a parabola through the neighbouring costs. Output: the {@link
+	 * MotionCode} of the motion plus 128 in r and a, the mean error per pixel in g. After a scene cut ({@code u_error}) there is no motion.
 	 */
-	private static final String REFINE = PRECISION
+	/**
+	 * Comparing an 8x8 block of the newer frame (at {@code g_o}, up to {@code g_e}) with the older
+	 * frame moved by {@code d}, both with their change of brightness, and the motion to a quarter
+	 * pixel: shared by the refinement and {@link #TIE}.
+	 */
+	private static final String MATCH = ""
 			+ "uniform sampler2D u_prev;\n"
 			+ "uniform sampler2D u_curr;\n"
-			+ "uniform sampler2D u_coarse;\n"
-			+ "uniform sampler2D u_previous;\n"
-			+ "uniform sampler2D u_error;\n"
-			+ "uniform float u_hasPrevious;\n"
 			+ "uniform vec2 u_mapPrev;\n"
 			+ "uniform vec2 u_mapCurr;\n"
 			+ "uniform vec2 u_size;\n"
-			+ "uniform vec2 u_grid;\n"
-			+ "uniform vec2 u_coarseGrid;\n"
-			+ "varying vec2 v_uv;\n"
 			+ "float luma(sampler2D t, vec2 p) {\n"
 			+ "    return dot(texture2D(t, (p + 0.5) / u_size).rgb, vec3(0.299, 0.587, 0.114));\n"
 			+ "}\n"
@@ -250,14 +252,35 @@ final class GpuMotionSearch {
 			+ "    }\n"
 			+ "    return s;\n"
 			+ "}\n"
+			+ "float subPixel(vec2 d, float s0, vec2 u) {\n"
+			+ "    float sa = sad(d - u);\n"
+			+ "    float sb = sad(d + u);\n"
+			+ "    if (sa >= 1e5 || sb >= 1e5) return 0.0;\n"
+			+ "    float curve = sa - 2.0 * s0 + sb;\n"
+			+ "    if (curve <= 0.0) return 0.0;\n"
+			+ "    return clamp((sa - sb) / (2.0 * curve), -0.5, 0.5);\n"
+			+ "}\n";
+
+	private static final String REFINE = PRECISION
+			+ MATCH
+			+ "uniform sampler2D u_coarse;\n"
+			+ "uniform sampler2D u_previous;\n"
+			+ "uniform sampler2D u_error;\n"
+			+ "uniform float u_hasPrevious;\n"
+			+ "uniform float u_codeLinear;\n"
+			+ "uniform vec2 u_grid;\n"
+			+ "uniform vec2 u_coarseGrid;\n"
+			+ "varying vec2 v_uv;\n"
 			+ "vec2 guess(vec2 cell) {\n"
 			+ "    vec2 c = clamp(cell, vec2(0.0), u_coarseGrid - 1.0);\n"
 			+ "    vec4 m = texture2D(u_coarse, (c + 0.5) / u_coarseGrid);\n"
 			+ "    return -floor(vec2(m.r, m.a) * 255.0 - 128.0 + 0.5) * 4.0;\n"
 			+ "}\n"
+			+ MotionCode.GLSL
 			+ "vec2 previousGuess(vec2 cell) {\n"
 			+ "    vec4 m = texture2D(u_previous, (cell + 0.5) / u_grid);\n"
-			+ "    return -floor((vec2(m.r, m.a) * 255.0 - 128.0) / 4.0 + 0.5);\n"
+			+ "    vec2 c = vec2(m.r, m.a) * 255.0 - 128.0;\n"
+			+ "    return -floor(vec2(decodeMotion(c.x, u_codeLinear), decodeMotion(c.y, u_codeLinear)) / 4.0 + 0.5);\n"
 			+ "}\n"
 			+ "float g_bestCost;\n"
 			+ "float g_best;\n"
@@ -276,14 +299,6 @@ final class GpuMotionSearch {
 			+ "            }\n"
 			+ "        }\n"
 			+ "    }\n"
-			+ "}\n"
-			+ "float subPixel(vec2 d, float s0, vec2 u) {\n"
-			+ "    float sa = sad(d - u);\n"
-			+ "    float sb = sad(d + u);\n"
-			+ "    if (sa >= 1e5 || sb >= 1e5) return 0.0;\n"
-			+ "    float curve = sa - 2.0 * s0 + sb;\n"
-			+ "    if (curve <= 0.0) return 0.0;\n"
-			+ "    return clamp((sa - sb) / (2.0 * curve), -0.5, 0.5);\n"
 			+ "}\n"
 			+ "void main() {\n"
 			+ "    if (" + IS_CUT + ") {\n"
@@ -327,14 +342,11 @@ final class GpuMotionSearch {
 			+ "            err = g_best;\n"
 			+ "        }\n"
 			+ "    }\n"
-			+ "    v = clamp(v, -127.0, 127.0);\n"
+			+ "    v = vec2(encodeMotion(v.x, u_codeLinear), encodeMotion(v.y, u_codeLinear));\n"
 			+ "    gl_FragColor = vec4((v.x + 128.0) / 255.0, err / (n.x * n.y), 0.0, (v.y + 128.0) / 255.0);\n"
 			+ "}\n";
 
-	/** How many blocks from the edges picture coming in can reach: the most it moves (32 pixels). */
-	private static final int EDGE_DEPTH = 4;
-	/** The same for the coarse search: 8 quarter-size pixels, two of its blocks. */
-	private static final int COARSE_EDGE_DEPTH = 2;
+
 
 	/**
 	 * Like {@link MotionEstimator#fillEdges}: a block near an edge whose picture was not found (it
@@ -361,6 +373,114 @@ final class GpuMotionSearch {
 			+ "        }\n"
 			+ "    }\n"
 			+ "    gl_FragColor = own;\n"
+			+ "}\n";
+
+	/** How many blocks the motion of the whole picture is the median of. */
+	private static final int GLOBAL_SAMPLES = 32;
+
+	/**
+	 * The motion of most of the picture, in one pixel: the median of the motions (codes keep their
+	 * order, see {@link MotionCode}) of {@link #GLOBAL_SAMPLES} blocks spread over the frame, sorted
+	 * with a fixed network of compare-and-swap steps.
+	 */
+	private static final String GLOBAL = PRECISION
+			+ "uniform sampler2D u_src;\n"
+			+ "uniform vec2 u_grid;\n"
+			+ "varying vec2 v_uv;\n"
+			+ "#define s2(a, b) t = a; a = min(a, b); b = max(t, b);\n"
+			+ "vec2 at(float i, float j) {\n"
+			+ "    vec2 c = floor((vec2(i, j) + 0.5) * u_grid / vec2(8.0, 4.0));\n"
+			+ "    vec4 m = texture2D(u_src, (c + 0.5) / u_grid);\n"
+			+ "    return vec2(m.r, m.a);\n"
+			+ "}\n"
+			+ "void main() {\n"
+			+ "    vec2 t;\n"
+			+ samples()
+			+ sortingNetwork(GLOBAL_SAMPLES)
+			+ "    gl_FragColor = vec4(v" + GLOBAL_SAMPLES / 2 + ".x, 0.0, 0.0, v" + GLOBAL_SAMPLES / 2 + ".y);\n"
+			+ "}\n";
+
+	/** The samples of {@link #GLOBAL}: v0 to v31 from an 8x4 grid of blocks. */
+	private static String samples() {
+		StringBuilder sb = new StringBuilder();
+		for (int k = 0; k < GLOBAL_SAMPLES; k++) {
+			sb.append("    vec2 v").append(k).append(" = at(").append(k % 8).append(".0, ").append(k / 8)
+					.append(".0);\n");
+		}
+		return sb.toString();
+	}
+
+	/** Batcher's odd-even merge sort of v0 to v(n-1), n a power of two, as compare-and-swap steps. */
+	static String sortingNetwork(int n) {
+		StringBuilder sb = new StringBuilder();
+		for (int p = 1; p < n; p <<= 1) {
+			for (int k = p; k >= 1; k >>= 1) {
+				for (int j = k % p; j <= n - 1 - k; j += 2 * k) {
+					for (int i = 0; i <= Math.min(k - 1, n - j - k - 1); i++) {
+						if ((i + j) / (2 * p) == (i + j + k) / (2 * p)) {
+							sb.append("    s2(v").append(i + j).append(", v").append(i + j + k).append(");\n");
+						}
+					}
+				}
+			}
+		}
+		return sb.toString();
+	}
+
+	/**
+	 * Like the CPU's tie-break (see {@link FineMotionEstimator}): a block that fits the motion of
+	 * most of the picture ({@link #GLOBAL}) about as well as its own takes it, so a repeating
+	 * pattern moves the way the rest of the picture tells.
+	 */
+	private static final String TIE = PRECISION
+			+ MATCH
+			+ "uniform sampler2D u_src;\n"
+			+ "uniform sampler2D u_global;\n"
+			+ "uniform float u_codeLinear;\n"
+			+ "uniform vec2 u_grid;\n"
+			+ "varying vec2 v_uv;\n"
+			+ MotionCode.GLSL
+			+ "vec2 motionOf(vec4 m) {\n"
+			+ "    vec2 c = vec2(m.r, m.a) * 255.0 - 128.0;\n"
+			+ "    return vec2(decodeMotion(c.x, u_codeLinear), decodeMotion(c.y, u_codeLinear));\n"
+			+ "}\n"
+			+ "void main() {\n"
+			+ "    vec2 cell = floor(v_uv * u_grid);\n"
+			+ "    vec4 own = texture2D(u_src, (cell + 0.5) / u_grid);\n"
+			+ "    vec2 g = motionOf(texture2D(u_global, vec2(0.5)));\n"
+			+ "    vec2 m = motionOf(own);\n"
+			+ "    if (abs(m.x - g.x) <= 4.0 && abs(m.y - g.y) <= 4.0) {\n"
+			+ "        gl_FragColor = own;\n"
+			+ "        return;\n"
+			+ "    }\n"
+			+ "    g_o = cell * 8.0;\n"
+			+ "    g_e = min(g_o + 8.0, u_size);\n"
+			+ "    vec2 n = g_e - g_o;\n"
+			// the motion of the whole itself first, so a tie keeps it
+			+ "    vec2 c = -floor(g / 4.0 + 0.5);\n"
+			+ "    float best = sad(c);\n"
+			+ "    vec2 bestD = c;\n"
+			+ "    for (int dy = -1; dy <= 1; dy++) {\n"
+			+ "        for (int dx = -1; dx <= 1; dx++) {\n"
+			+ "            if (dx == 0 && dy == 0) continue;\n"
+			+ "            vec2 d = c + vec2(float(dx), float(dy));\n"
+			+ "            float s = sad(d);\n"
+			+ "            if (s < best) {\n"
+			+ "                best = s;\n"
+			+ "                bestD = d;\n"
+			+ "            }\n"
+			+ "        }\n"
+			+ "    }\n"
+			+ "    float err = best / (n.x * n.y);\n"
+			+ "    if (best >= 1e5 || err > own.g * " + TIE_FACTOR + " + 1.0 / (16.0 * 255.0)) {\n"
+			+ "        gl_FragColor = own;\n"
+			+ "        return;\n"
+			+ "    }\n"
+			+ "    float fx = subPixel(bestD, best, vec2(1.0, 0.0));\n"
+			+ "    float fy = subPixel(bestD, best, vec2(0.0, 1.0));\n"
+			+ "    vec2 v = -floor((bestD + vec2(fx, fy)) * 4.0 + 0.5);\n"
+			+ "    v = vec2(encodeMotion(v.x, u_codeLinear), encodeMotion(v.y, u_codeLinear));\n"
+			+ "    gl_FragColor = vec4((v.x + 128.0) / 255.0, err, 0.0, (v.y + 128.0) / 255.0);\n"
 			+ "}\n";
 
 	/** 3x3 median of the motion (r and a), so a single wrong block does not tear the picture. */
@@ -448,12 +568,23 @@ final class GpuMotionSearch {
 	private final int coarseRows;
 	private final int cols;
 	private final int rows;
+	/** How far the coarse search looks each way, in quarter-size pixels: 8, or 16 with Ultra. */
+	private final int coarseRange;
+	/** How many blocks from the edges picture coming in can reach (the most it moves). */
+	private final int edgeDepth;
+	/** The same for the blocks of the coarse search. */
+	private final int coarseEdgeDepth;
+	/** How the vectors are coded ({@link MotionCode}): exactly, or reaching far with Ultra. */
+	private final int codeLinear;
 	private final int[] quarterTex = new int[FramePacer.KEPT];
 	private int coarseTex;
 	private int coarseMedianTex;
 	private int coarseFilledTex;
 	private int refinedTex;
 	private int filledTex;
+	/** The motion of the whole picture (1x1), and the motion after the tie-break. */
+	private int globalTex;
+	private int tiedTex;
 	/** Two textures in turn: the newest motion, and the one before it (the guess for the next). */
 	private final int[] forwardTex = new int[2];
 	private int current;
@@ -465,12 +596,18 @@ final class GpuMotionSearch {
 	private Pass refine;
 	private Pass median;
 	private Pass fill;
+	private Pass global;
+	private Pass tie;
 	private Pass error;
 	private final ByteBuffer pixel = ByteBuffer.allocateDirect(4).order(ByteOrder.nativeOrder());
 	/** The texture units the passes use, unbound after each pass (the last one left active). */
 	private static final int[] UNITS = {GL_TEXTURE4, GL_TEXTURE3, GL_TEXTURE2, GL_TEXTURE1, GL_TEXTURE0};
 
-	private GpuMotionSearch(int width, int height) {
+	private GpuMotionSearch(int width, int height, boolean ultra) {
+		this.coarseRange = ultra ? 16 : 8;
+		this.edgeDepth = 4 * coarseRange / BLOCK;
+		this.coarseEdgeDepth = coarseRange / 4;
+		this.codeLinear = ultra ? MotionCode.WIDE : MotionCode.EXACT;
 		this.width = width;
 		this.height = height;
 		this.quarterWidth = width / 4;
@@ -493,13 +630,23 @@ final class GpuMotionSearch {
 	 * @return null if the size is too small or the GPU can not run it (the CPU search is used then)
 	 */
 	static GpuMotionSearch create(int width, int height) {
+		return create(width, height, false);
+	}
+
+	/**
+	 * Builds the GPU search for frames of this size; with {@code ultra} reaching twice as far (64
+	 * pixels per frame).
+	 *
+	 * @return null if the size is too small or the GPU can not run it (the CPU search is used then)
+	 */
+	static GpuMotionSearch create(int width, int height, boolean ultra) {
 		if (width < 4 * BLOCK || height < 4 * BLOCK) {
 			return null;
 		}
 		while (glGetError() != GL_NO_ERROR) {
 			// an error somebody else left must not be blamed on this
 		}
-		GpuMotionSearch s = new GpuMotionSearch(width, height);
+		GpuMotionSearch s = new GpuMotionSearch(width, height, ultra);
 		if (!s.build() || glGetError() != GL_NO_ERROR) {
 			s.release();
 			while (glGetError() != GL_NO_ERROR) {
@@ -512,16 +659,18 @@ final class GpuMotionSearch {
 
 	private boolean build() {
 		quarter = link(QUARTER);
-		coarse = link(COARSE);
+		coarse = link(COARSE.replace("RANGE", Integer.toString(coarseRange)));
 		refine = link(REFINE);
 		median = link(MEDIAN);
 		error = link(ERROR);
 		fill = link(FILL);
+		global = link(GLOBAL);
+		tie = link(TIE);
 		if (quarter == null || coarse == null || refine == null || median == null || error == null
-				|| fill == null) {
+				|| fill == null || global == null || tie == null) {
 			return false;
 		}
-		int[] ids = new int[FramePacer.KEPT + 9];
+		int[] ids = new int[FramePacer.KEPT + 11];
 		glGenTextures(ids.length, ids, 0);
 		for (int i = 0; i < FramePacer.KEPT; i++) {
 			quarterTex[i] = texture(ids[i], quarterWidth, quarterHeight);
@@ -535,6 +684,8 @@ final class GpuMotionSearch {
 		errorTex = texture(ids[9], 1, 1);
 		filledTex = texture(ids[10], cols, rows);
 		coarseFilledTex = texture(ids[11], coarseCols, coarseRows);
+		globalTex = texture(ids[12], 1, 1);
+		tiedTex = texture(ids[13], cols, rows);
 		int[] fb = new int[1];
 		glGenFramebuffers(1, fb, 0);
 		fbo = fb[0];
@@ -607,6 +758,11 @@ final class GpuMotionSearch {
 
 	int rows() {
 		return rows;
+	}
+
+	/** How the vectors are coded ({@link MotionCode#EXACT} or {@link MotionCode#WIDE}). */
+	int codeLinear() {
+		return codeLinear;
 	}
 
 	/** The motion from the previous to the newest frame, as of the last {@link #search}. */
@@ -710,7 +866,7 @@ final class GpuMotionSearch {
 			glUniform2f(error.uniform("u_grid"), coarseCols, coarseRows);
 			end(error);
 		}
-		fillInto(coarseTex, coarseFilledTex, coarseCols, coarseRows, COARSE_EDGE_DEPTH);
+		fillInto(coarseTex, coarseFilledTex, coarseCols, coarseRows, coarseEdgeDepth);
 		medianInto(coarseFilledTex, coarseMedianTex, coarseCols, coarseRows);
 		// refinement on the full-size frames
 		begin(refine, refinedTex, cols, rows);
@@ -723,10 +879,26 @@ final class GpuMotionSearch {
 		glUniform2f(refine.uniform("u_size"), width, height);
 		glUniform2f(refine.uniform("u_grid"), cols, rows);
 		glUniform2f(refine.uniform("u_coarseGrid"), coarseCols, coarseRows);
+		glUniform1f(refine.uniform("u_codeLinear"), codeLinear);
 		map(refine, mapFrom, mapTo);
 		end(refine);
-		fillInto(refinedTex, filledTex, cols, rows, EDGE_DEPTH);
-		medianInto(filledTex, target, cols, rows);
+		fillInto(refinedTex, filledTex, cols, rows, edgeDepth);
+		// the motion of the whole picture, and blocks that fit it as well take it
+		begin(global, globalTex, 1, 1);
+		bind(0, filledTex, global.uniform("u_src"));
+		glUniform2f(global.uniform("u_grid"), cols, rows);
+		end(global);
+		begin(tie, tiedTex, cols, rows);
+		bind(0, fromTexture, tie.uniform("u_prev"));
+		bind(1, toTexture, tie.uniform("u_curr"));
+		bind(2, filledTex, tie.uniform("u_src"));
+		bind(3, globalTex, tie.uniform("u_global"));
+		glUniform2f(tie.uniform("u_size"), width, height);
+		glUniform2f(tie.uniform("u_grid"), cols, rows);
+		glUniform1f(tie.uniform("u_codeLinear"), codeLinear);
+		map(tie, mapFrom, mapTo);
+		end(tie);
+		medianInto(tiedTex, target, cols, rows);
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	}
 
@@ -795,22 +967,23 @@ final class GpuMotionSearch {
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
 		int[] out = new int[cols * rows * 2];
 		for (int i = 0; i < cols * rows; i++) {
-			out[i * 2] = (buf.get(i * 4) & 0xFF) - 128;
-			out[i * 2 + 1] = (buf.get(i * 4 + 3) & 0xFF) - 128;
+			out[i * 2] = MotionCode.decode((buf.get(i * 4) & 0xFF) - 128, codeLinear);
+			out[i * 2 + 1] = MotionCode.decode((buf.get(i * 4 + 3) & 0xFF) - 128, codeLinear);
 		}
 		return out;
 	}
 
 	/** Frees the GL objects. */
 	void release() {
-		for (Pass p : new Pass[]{quarter, coarse, refine, median, error, fill}) {
+		for (Pass p : new Pass[]{quarter, coarse, refine, median, error, fill, global, tie}) {
 			if (p != null) {
 				glDeleteProgram(p.id);
 			}
 		}
-		quarter = coarse = refine = median = error = fill = null;
+		quarter = coarse = refine = median = error = fill = global = tie = null;
 		int[] textures = {quarterTex[0], quarterTex[1], quarterTex[2], coarseTex, coarseMedianTex,
-				refinedTex, forwardTex[0], forwardTex[1], backwardTex, errorTex, filledTex, coarseFilledTex};
+				refinedTex, forwardTex[0], forwardTex[1], backwardTex, errorTex, filledTex, coarseFilledTex,
+				globalTex, tiedTex};
 		glDeleteTextures(textures.length, textures, 0);
 		if (fbo != 0) {
 			glDeleteFramebuffers(1, new int[]{fbo}, 0);

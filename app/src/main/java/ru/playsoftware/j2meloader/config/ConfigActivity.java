@@ -387,6 +387,8 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 	 */
 	private static final int FRAME_GENERATION_MOTION = 2;
 	private static final int FRAME_GENERATION_MOTION_HQ = 3;
+	/** The Motion entry with the Ultra search (FrameGenerator.MODE_MOTION_ULTRA). */
+	private static final int FRAME_GENERATION_MOTION_ULTRA = 4;
 	/** The entries of the list of where the search runs. */
 	private static final int SEARCH_ONE_CORE = 0;
 	private static final int SEARCH_MULTI_CORE = 1;
@@ -394,6 +396,7 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 	/** The entries of the motion search list. */
 	private static final int MOTION_PERFORMANCE = 0;
 	private static final int MOTION_QUALITY = 1;
+	private static final int MOTION_ULTRA = 2;
 
 	/** The rates of the frame generation rate list, in its order; 0 = the screen's refresh rate. */
 	private static final int[] FRAME_GENERATION_FPS = {0, 60, 90, 120};
@@ -680,7 +683,8 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 		// the motion modes are one entry; which search they use is a list of its own
 		binding.frameGenerationSelector.setSelection(Math.min(params.frameGeneration, FRAME_GENERATION_MOTION));
 		binding.frameGenerationMotionSelector.setSelection(
-				params.frameGeneration == FRAME_GENERATION_MOTION ? MOTION_PERFORMANCE : MOTION_QUALITY);
+				params.frameGeneration == FRAME_GENERATION_MOTION ? MOTION_PERFORMANCE
+						: params.frameGeneration == FRAME_GENERATION_MOTION_ULTRA ? MOTION_ULTRA : MOTION_QUALITY);
 		// where the search runs is one list, kept as the two switches it replaced
 		binding.frameGenerationSearchSelector.setSelection(params.frameGenerationGpu ? SEARCH_GPU
 				: params.frameGenerationMultiCore ? SEARCH_MULTI_CORE : SEARCH_ONE_CORE);
@@ -744,9 +748,10 @@ public class ConfigActivity extends BaseActivity implements View.OnClickListener
 			params.showFps = binding.showFpsToggle.isChecked();
 			params.fpsLimit = parseInt(binding.fpsLimit.getText().toString());
 		int frameGeneration = binding.frameGenerationSelector.getSelectedItemPosition();
-		if (frameGeneration == FRAME_GENERATION_MOTION
-				&& binding.frameGenerationMotionSelector.getSelectedItemPosition() == MOTION_QUALITY) {
-			frameGeneration = FRAME_GENERATION_MOTION_HQ;
+		if (frameGeneration == FRAME_GENERATION_MOTION) {
+			int search = binding.frameGenerationMotionSelector.getSelectedItemPosition();
+			frameGeneration = search == MOTION_QUALITY ? FRAME_GENERATION_MOTION_HQ
+					: search == MOTION_ULTRA ? FRAME_GENERATION_MOTION_ULTRA : FRAME_GENERATION_MOTION;
 		}
 		params.frameGeneration = mode == 1 ? frameGeneration : 0;
 		int search = binding.frameGenerationSearchSelector.getSelectedItemPosition();

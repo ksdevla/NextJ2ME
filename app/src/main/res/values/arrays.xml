@@ -56,10 +56,11 @@
         <item>@string/pref_frame_generation_blend</item>
         <item>@string/pref_frame_generation_motion</item>
     </string-array>
-    <!-- in the order of ConfigActivity.MOTION_PERFORMANCE and MOTION_QUALITY -->
+    <!-- in the order of ConfigActivity.MOTION_PERFORMANCE, MOTION_QUALITY and MOTION_ULTRA -->
     <string-array name="pref_frame_generation_motion_entries">
         <item>@string/pref_frame_generation_performance</item>
         <item>@string/pref_frame_generation_quality</item>
+        <item>@string/pref_frame_generation_ultra</item>
     </string-array>
     <!-- in the order of ConfigActivity.SEARCH_ONE_CORE, SEARCH_MULTI_CORE and SEARCH_GPU -->
     <string-array name="pref_frame_generation_search_entries">

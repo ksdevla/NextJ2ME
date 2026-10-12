@@ -100,6 +100,8 @@ public final class FrameGenerator {
 	public static final int MODE_MOTION = 2;
 	/** Follow the motion finer, faster and more precisely, for more CPU and GPU time. */
 	public static final int MODE_MOTION_HQ = 3;
+	/** Like {@link #MODE_MOTION_HQ}, reaching twice as far: 64 pixels per frame. */
+	public static final int MODE_MOTION_ULTRA = 4;
 	private static final int BLOCK = 8;
 	private static final int RANGE = 8;
 	/** How long a motion search thread waits for work before it ends. */
@@ -116,9 +118,11 @@ public final class FrameGenerator {
 		final byte[] dataBack;
 		final boolean sceneCut;
 		final long readyNanos;
+		/** How the vectors are coded ({@link MotionCode#EXACT} or {@link MotionCode#WIDE}). */
+		final int codeLinear;
 
 		Motion(int generation, int frame, int cols, int rows, byte[] data, byte[] dataBack,
-			   boolean sceneCut, long readyNanos) {
+			   boolean sceneCut, long readyNanos, int codeLinear) {
 			this.generation = generation;
 			this.frame = frame;
 			this.cols = cols;
@@ -127,6 +131,7 @@ public final class FrameGenerator {
 			this.dataBack = dataBack;
 			this.sceneCut = sceneCut;
 			this.readyNanos = readyNanos;
+			this.codeLinear = codeLinear;
 		}
 	}
 
@@ -404,7 +409,7 @@ public final class FrameGenerator {
 		gpuFrame = -1;
 		int minSize = 4 * Math.max(BLOCK, FineMotionEstimator.BLOCK);
 		if (mode >= MODE_MOTION && w >= minSize && h >= minSize && gpuSearch && !gpuFailed) {
-			gpu = GpuMotionSearch.create(w, h);
+			gpu = GpuMotionSearch.create(w, h, mode == MODE_MOTION_ULTRA);
 			if (gpu == null) {
 				Log.w(TAG, "the GPU can not search the motion here: the CPU does it");
 			}
@@ -415,10 +420,10 @@ public final class FrameGenerator {
 			gridRows = gpu.rows();
 			blockPxX = blockPxY = GpuMotionSearch.BLOCK;
 			motionUnit = GpuMotionSearch.UNITS_PER_PIXEL;
-			wideSearch = mode == MODE_MOTION_HQ;
+			wideSearch = mode >= MODE_MOTION_HQ;
 		} else if (mode >= MODE_MOTION && w >= minSize && h >= minSize) {
-			if (mode == MODE_MOTION_HQ) {
-				fineEstimator = new FineMotionEstimator(w, h);
+			if (mode >= MODE_MOTION_HQ) {
+				fineEstimator = new FineMotionEstimator(w, h, mode == MODE_MOTION_ULTRA);
 				gridCols = fineEstimator.cols();
 				gridRows = fineEstimator.rows();
 				blockPxX = blockPxY = FineMotionEstimator.BLOCK;
@@ -595,15 +600,17 @@ public final class FrameGenerator {
 					// the fine vectors are already in the texture's steps (quarter pixels); the
 					// normal ones are in quarter pixels of the half-size picture, two frame pixels each
 					int scale = fine != null ? 1 : 2;
-					byte[] back = null;
+					MotionEstimator.Result b = null;
 					if (bothWays && !r.sceneCut) {
 						// the same search with the frames swapped: new to old, on the old frame's blocks
-						MotionEstimator.Result b = fine != null ? fine.estimate(gray, older, pool, bands)
+						b = fine != null ? fine.estimate(gray, older, pool, bands)
 								: est.estimate(gray, older, pool, bands);
-						back = b.encode(scale);
 					}
-					found = new Motion(gen, index, r.cols, r.rows, r.encode(scale), back,
-							r.sceneCut, System.nanoTime());
+					// exactly, unless the motion is faster than that can keep (only Ultra finds that)
+					int linear = Math.max(r.largest(), b == null ? 0 : b.largest()) * scale > MotionCode.EXACT
+							? MotionCode.WIDE : MotionCode.EXACT;
+					found = new Motion(gen, index, r.cols, r.rows, r.encode(scale, linear),
+							b == null ? null : b.encode(scale, linear), r.sceneCut, System.nanoTime(), linear);
 				}
 				state.spare = state.gray;
 				state.gray = gray;
@@ -611,7 +618,7 @@ public final class FrameGenerator {
 				state.vectors = last;
 				// also when nothing was found, so the blend does not wait for it
 				motion = found != null ? found
-						: new Motion(gen, index, 0, 0, null, null, false, System.nanoTime());
+						: new Motion(gen, index, 0, 0, null, null, false, System.nanoTime(), MotionCode.EXACT);
 			} catch (java.util.concurrent.CancellationException e) {
 				// the generator is shutting down
 			} catch (RuntimeException e) {
@@ -721,6 +728,8 @@ public final class FrameGenerator {
 		glUniform1f(program.uT, t);
 		glUniform1f(program.uUseMotion, useMotion ? 1f : 0f);
 		glUniform1f(program.uMotionUnit, motionUnit);
+		glUniform1f(program.uCodeLinear, gpu != null ? gpu.codeLinear()
+				: m != null && m.frame == k && m.data != null ? m.codeLinear : MotionCode.EXACT);
 		glUniform1f(program.uWide, wideSearch ? 1f : 0f);
 		glUniform2f(program.uTexSize, width, height);
 		glUniform2f(program.uBlockPx, blockPxX, blockPxY);

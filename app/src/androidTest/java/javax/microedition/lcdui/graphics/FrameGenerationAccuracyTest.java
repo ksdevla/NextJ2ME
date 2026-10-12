@@ -128,9 +128,11 @@ public class FrameGenerationAccuracyTest {
 	/** Two halves moving different ways, as where a road meets the scenery. */
 	private static final Scene SPLIT = (x, y, s) -> y < H / 2
 			? texture(x - 6.5 * s, y, 0) : texture(x + 5.25 * s, y, 1);
+	/** The rows of the overlay of {@link #HUD}. */
+	private static final int HUD_ROWS = 28;
 	/** A pan under a still overlay (score, buttons) with sharp small detail. */
 	private static final Scene HUD = (x, y, s) -> {
-		if (y < 28 && x > 8 && x < W - 8) {
+		if (y < HUD_ROWS && x > 8 && x < W - 8) {
 			boolean ink = ((x / 3) + (y / 3)) % 3 == 0 || (y > 10 && y < 14);
 			return ink ? 0xFFFFFFFF : 0xFF102040;
 		}
@@ -139,6 +141,8 @@ public class FrameGenerationAccuracyTest {
 
 	// ------------------------------------------------------------------ harder scenes
 
+	/** A pan between 24 and 32 pixels a frame, where motion is kept in steps of 1.5 pixels. */
+	private static final Scene PAN28 = (x, y, s) -> texture(x - 28.25 * s, y - 3.5 * s, 0);
 	/** A pan faster than the search reaches (32 pixels a frame). */
 	private static final Scene VERY_FAST = (x, y, s) -> texture(x - 44.5 * s, y - 6.25 * s, 0);
 	/** A small object (a bullet, a ball) moving fast over a still background. */
@@ -175,6 +179,12 @@ public class FrameGenerationAccuracyTest {
 		int g = clamp(val);
 		return 0xFF000000 | (g << 16) | (clamp(val * 0.7 + 40) << 8) | clamp(255 - val * 0.6);
 	};
+	/**
+	 * A band of the repeating pattern (a fence, a road) across the middle of a picture whose other
+	 * parts move the same way and do not repeat, so they show which way it moves.
+	 */
+	private static final Scene FENCE = (x, y, s) -> y >= 110 && y < 210 ? REPEAT.at(x, y, s)
+			: texture(x - 11.25 * s, y - 1.5 * s, 0);
 	/** Two objects moving opposite ways over a still background, one passing in front of the other. */
 	private static final Scene CROSSING = (x, y, s) -> {
 		double ax = 40 + 13.5 * s, ay = 130 + 2.0 * s;
@@ -206,10 +216,15 @@ public class FrameGenerationAccuracyTest {
 	 * a picture by a fraction of a pixel can not avoid, does not count): real faults.
 	 */
 	private static double[] compare(int[] got, int[] want) {
+		return compare(got, want, 0, H);
+	}
+
+	/** Like {@link #compare(int[], int[])}, over rows {@code y0} (included) to {@code y1}. */
+	private static double[] compare(int[] got, int[] want, int y0, int y1) {
 		long sum = 0;
 		int wrong = 0;
 		int faults = 0;
-		for (int y = 0; y < H; y++) {
+		for (int y = y0; y < y1; y++) {
 			for (int x = 0; x < W; x++) {
 				int a = got[y * W + x];
 				int[] c = channels(a, want[y * W + x]);
@@ -230,8 +245,8 @@ public class FrameGenerationAccuracyTest {
 				}
 			}
 		}
-		return new double[]{sum / (3.0 * got.length), 100.0 * wrong / got.length,
-				100.0 * faults / got.length};
+		int n = W * (y1 - y0);
+		return new double[]{sum / (3.0 * n), 100.0 * wrong / n, 100.0 * faults / n};
 	}
 
 	private static int[] channels(int a, int b) {
@@ -285,6 +300,9 @@ public class FrameGenerationAccuracyTest {
 	 * Has {@code setup} draw the picture at {@code s} (0.5 between the frames, 1.5 past them with low
 	 * latency) from the scene's frames at 0 and 1; returns it compared with the true picture.
 	 */
+	/** When above 0, {@link #measure} scores only the rows above it (to score the HUD alone). */
+	private static int onlyRows;
+
 	private static double[] measure(Scene scene, Setup setup, double s) throws InterruptedException {
 		FrameGenerator g = FrameGenerator.create(setup.mode, false, true, setup.cleanEdges, setup.gpu,
 				false, setup.lowLatency, false);
@@ -303,13 +321,14 @@ public class FrameGenerationAccuracyTest {
 		b.recycle();
 		int[] want = draw(scene, s);
 		dump(setup.name + " " + sceneName(scene) + " " + s, got, want);
-		return compare(got, want);
+		return onlyRows > 0 ? compare(got, want, 0, onlyRows) : compare(got, want);
 	}
 
 	private static final Object[][] SCENES = {{"pan", PAN}, {"fast pan", FAST}, {"object", OBJECT},
 			{"split", SPLIT}, {"pan under HUD", HUD}};
-	private static final Object[][] HARD_SCENES = {{"very fast", VERY_FAST}, {"small fast", SMALL_FAST},
-			{"zoom+turn", ZOOM}, {"fade", FADE}, {"repeating", REPEAT}, {"crossing", CROSSING}};
+	private static final Object[][] HARD_SCENES = {{"pan 28 px", PAN28}, {"very fast", VERY_FAST}, {"small fast", SMALL_FAST},
+			{"zoom+turn", ZOOM}, {"fade", FADE}, {"repeating", REPEAT}, {"fence", FENCE},
+			{"crossing", CROSSING}, {"HUD only", HUD}};
 
 	private static String sceneName(Scene scene) {
 		for (Object[][] list : new Object[][][]{SCENES, HARD_SCENES}) {
@@ -369,6 +388,8 @@ public class FrameGenerationAccuracyTest {
 			new Setup("Quality", FrameGenerator.MODE_MOTION_HQ, false, false, false),
 			new Setup("Q clean edges", FrameGenerator.MODE_MOTION_HQ, false, true, false),
 			new Setup("Q on GPU", FrameGenerator.MODE_MOTION_HQ, true, false, false),
+			new Setup("Ultra", FrameGenerator.MODE_MOTION_ULTRA, false, false, false),
+			new Setup("Ultra on GPU", FrameGenerator.MODE_MOTION_ULTRA, true, false, false),
 	};
 	private static final Setup LOW_LATENCY =
 			new Setup("Q low latency", FrameGenerator.MODE_MOTION_HQ, false, false, true);
@@ -383,17 +404,20 @@ public class FrameGenerationAccuracyTest {
 		table.append(String.format(Locale.ROOT, " %-15s %-15s\n", "Repeat (1.5)", LOW_LATENCY.name));
 		for (Object[] row : scenes) {
 			Scene scene = (Scene) row[1];
-			double[] repeat = compare(draw(scene, 1), draw(scene, 0.5));
+			onlyRows = "HUD only".equals(row[0]) ? HUD_ROWS : 0;
+			int rows = onlyRows > 0 ? onlyRows : H;
+			double[] repeat = compare(draw(scene, 1), draw(scene, 0.5), 0, rows);
 			table.append(String.format(Locale.ROOT, "%-13s %5.2f%% %5.2f%%  ", row[0], repeat[1], repeat[2]));
 			for (Setup setup : SETUPS) {
 				double[] m = measure(scene, setup, 0.5);
 				table.append(String.format(Locale.ROOT, " %5.2f%% %5.2f%%  ", m[1], m[2]));
 			}
-			double[] ahead = compare(draw(scene, 1), draw(scene, 1.5));
+			double[] ahead = compare(draw(scene, 1), draw(scene, 1.5), 0, rows);
 			double[] m = measure(scene, LOW_LATENCY, 1.5);
 			table.append(String.format(Locale.ROOT, " %5.2f%% %5.2f%%   %5.2f%% %5.2f%%\n",
 					ahead[1], ahead[2], m[1], m[2]));
 		}
+		onlyRows = 0;
 		return table.toString();
 	}
 

@@ -56,7 +56,8 @@ final class InterpolationProgram {
 
 	/**
 	 * The motion texture has one texel per block and two 8-bit channels (luminance and alpha) that
-	 * hold the motion plus 128, in {@code u_motionUnit} steps per frame pixel. A vector (vx, vy) means: what is at p in the
+	 * hold the {@link MotionCode} of the motion plus 128, in {@code u_motionUnit} steps per frame
+	 * pixel. A vector (vx, vy) means: what is at p in the
 	 * previous frame is at p + v in the newest frame. At blend position t, the previous frame is
 	 * sampled at p - v*t and the newest frame at p + v*(1-t).
 	 * <p>
@@ -115,6 +116,7 @@ final class InterpolationProgram {
 					+ "uniform sampler2D u_error;\n"
 					+ "uniform float u_useError;\n"
 					+ "uniform vec2 u_change;\n"
+					+ "uniform float u_codeLinear;\n"
 					+ "uniform float u_t;\n"
 					+ "uniform float u_useMotion;\n"
 					+ "uniform float u_motionUnit;\n"
@@ -129,8 +131,13 @@ final class InterpolationProgram {
 					+ "float g_best;\n"
 					+ "vec4 g_bestA;\n"
 					+ "vec4 g_bestB;\n"
+					+ "vec2 g_mv;\n"
+					+ "vec2 g_bestMv;\n"
+					+ MotionCode.GLSL
 					+ "vec2 decode(vec4 m) {\n"
-					+ "    return (vec2(m.r, m.a) * 255.0 - 128.0) / u_motionUnit / u_texSize;\n"
+					+ "    vec2 c = vec2(m.r, m.a) * 255.0 - 128.0;\n"
+					+ "    return vec2(decodeMotion(c.x, u_codeLinear), decodeMotion(c.y, u_codeLinear))\n"
+					+ "            / u_motionUnit / u_texSize;\n"
 					+ "}\n"
 					+ "vec2 blockMotion(vec2 cell) {\n"
 					+ "    vec2 c = clamp(cell, vec2(0.0), u_grid - 1.0);\n"
@@ -148,10 +155,27 @@ final class InterpolationProgram {
 					+ "float pixels(vec2 d) {\n"
 					+ "    return length(d * u_texSize);\n"
 					+ "}\n"
+					// the newest frame between its pixels (blended from the four around), for pictures
+					// past it: moved by a fraction of a pixel, a sharp edge then sits between two pixels
+					// as in the pictures between two frames, instead of jumping to the nearest one
+					+ "vec4 between(vec2 uv) {\n"
+					+ "    vec2 q = uv * u_texSize - 0.5;\n"
+					+ "    vec2 i = floor(q);\n"
+					+ "    vec2 f = q - i;\n"
+					+ "    vec2 a = (i + 0.5) / u_texSize;\n"
+					+ "    vec2 s = 1.0 / u_texSize;\n"
+					+ "    return mix(mix(texture2D(u_curr, a), texture2D(u_curr, a + vec2(s.x, 0.0)), f.x),\n"
+					+ "            mix(texture2D(u_curr, a + vec2(0.0, s.y)), texture2D(u_curr, a + s), f.x), f.y);\n"
+					+ "}\n"
+					+ "bool still(vec2 uv) {\n"
+					+ "    vec3 d = abs(texture2D(u_prev, uv).rgb - texture2D(u_curr, uv).rgb);\n"
+					+ "    return max(max(d.r, d.g), d.b) < 0.002;\n"
+					+ "}\n"
 					+ "bool inside(vec2 uv) {\n"
 					+ "    return uv.x >= 0.0 && uv.y >= 0.0 && uv.x <= 1.0 && uv.y <= 1.0;\n"
 					+ "}\n"
 					+ "float mismatch(vec2 mv) {\n"
+					+ "    g_mv = mv;\n"
 					+ "    vec2 pa = v_uv - mv * u_t;\n"
 					+ "    vec2 pb = v_uv + mv * (1.0 - u_t);\n"
 					+ "    g_a = texture2D(u_prev, pa);\n"
@@ -185,7 +209,15 @@ final class InterpolationProgram {
 					+ "        g_best = e;\n"
 					+ "        g_bestA = g_a;\n"
 					+ "        g_bestB = g_b;\n"
+					+ "        g_bestMv = g_mv;\n"
 					+ "    }\n"
+					+ "}\n"
+					// how far two colours are apart, as they are or with the brightness of a fade
+					// applied to the first (from the older frame)
+					+ "float differ(vec4 older, vec4 newer) {\n"
+					+ "    vec3 d = abs(older.rgb - newer.rgb);\n"
+					+ "    vec3 dc = abs(older.rgb * u_change.x + u_change.y - newer.rgb);\n"
+					+ "    return min(max(max(d.r, d.g), d.b), max(max(dc.r, dc.g), dc.b));\n"
 					+ "}\n"
 					+ "void main() {\n"
 					+ "    if (u_useError > 0.5 && " + GpuMotionSearch.IS_CUT + ") {\n"
@@ -193,11 +225,27 @@ final class InterpolationProgram {
 					+ "        return;\n"
 					+ "    }\n"
 					+ "    float tc = min(u_t, 1.0);\n"
-					+ "    vec4 plain = mix(texture2D(u_prev, v_uv), texture2D(u_curr, v_uv), tc);\n"
+					+ "    vec4 here = texture2D(u_curr, v_uv);\n"
+					+ "    vec4 plain = mix(texture2D(u_prev, v_uv), here, tc);\n"
 					+ "    if (u_useMotion < 0.5) {\n"
 					+ "        gl_FragColor = plain;\n"
 					+ "        return;\n"
 					+ "    }\n"
+					// still parts (a score, buttons, scenery that does not move) are shown as they are,
+					// not moved along with the motion around them
+					+ "    vec2 px = 1.0 / u_texSize;\n"
+					+ "    bool s0 = still(v_uv);\n"
+					+ "    bool s1 = still(v_uv + vec2(px.x, 0.0));\n"
+					+ "    bool s2 = still(v_uv - vec2(px.x, 0.0));\n"
+					+ "    bool s3 = still(v_uv + vec2(0.0, px.y));\n"
+					+ "    bool s4 = still(v_uv - vec2(0.0, px.y));\n"
+					+ "    if (s0 && s1 && s2 && s3 && s4) {\n"
+					+ "        gl_FragColor = here;\n"
+					+ "        return;\n"
+					+ "    }\n"
+					// next to a still part the newest frame is not blended between its pixels: that
+					// would bring some of the still part into the moving picture
+					+ "    bool nearStill = s0 || s1 || s2 || s3 || s4;\n"
 					+ "    vec2 p = v_uv * u_texSize / u_blockPx - 0.5;\n"
 					+ "    vec2 i = floor(p);\n"
 					+ "    vec2 f = p - i;\n"
@@ -208,6 +256,7 @@ final class InterpolationProgram {
 					+ "    g_best = mismatch(mix(mix(m00, m10, f.x), mix(m01, m11, f.x), f.y));\n"
 					+ "    g_bestA = g_a;\n"
 					+ "    g_bestB = g_b;\n"
+					+ "    g_bestMv = g_mv;\n"
 					+ "    tryBlock(i);\n"
 					+ "    tryBlock(i + vec2(1.0, 0.0));\n"
 					+ "    tryBlock(i + vec2(0.0, 1.0));\n"
@@ -227,7 +276,30 @@ final class InterpolationProgram {
 					+ "        tryBlock(i + vec2(2.0, 2.0));\n"
 					+ "    }\n"
 					+ "    float agree = 1.0 - smoothstep(0.06, 0.2, g_best);\n"
-					+ "    vec4 fallback = u_t > 1.0 ? g_bestB : plain;\n"
+					+ "    vec4 moved = u_t <= 1.0 ? mix(g_bestA, g_bestB, tc)\n"
+					+ "            : nearStill ? g_bestB : between(v_uv + g_bestMv * (1.0 - u_t));\n"
+					// A sharp edge moved by a fraction of a pixel lands on whole pixels in each frame,
+					// half a pixel apart: the two samples can differ although the motion is right.
+					// Where they match a pixel off, it is that, not a wrong motion: the moved samples
+					// are blended instead of falling back to the cross-fade of the frames in place.
+					+ "    if (u_t <= 1.0 && agree < 0.999 && !s0) {\n"
+					+ "        vec2 pa = v_uv - g_bestMv * u_t;\n"
+					+ "        vec2 pb = v_uv + g_bestMv * (1.0 - u_t);\n"
+					+ "        if (inside(pa) && inside(pb)) {\n"
+					+ "            float e = differ(g_bestA, texture2D(u_curr, pb + vec2(px.x, 0.0)));\n"
+					+ "            e = min(e, differ(g_bestA, texture2D(u_curr, pb - vec2(px.x, 0.0))));\n"
+					+ "            e = min(e, differ(g_bestA, texture2D(u_curr, pb + vec2(0.0, px.y))));\n"
+					+ "            e = min(e, differ(g_bestA, texture2D(u_curr, pb - vec2(0.0, px.y))));\n"
+					+ "            e = min(e, differ(texture2D(u_prev, pa + vec2(px.x, 0.0)), g_bestB));\n"
+					+ "            e = min(e, differ(texture2D(u_prev, pa - vec2(px.x, 0.0)), g_bestB));\n"
+					+ "            e = min(e, differ(texture2D(u_prev, pa + vec2(0.0, px.y)), g_bestB));\n"
+					+ "            e = min(e, differ(texture2D(u_prev, pa - vec2(0.0, px.y)), g_bestB));\n"
+					+ "            if (e < 0.06) {\n"
+					+ "                agree = 1.0;\n"
+					+ "            }\n"
+					+ "        }\n"
+					+ "    }\n"
+					+ "    vec4 fallback = u_t > 1.0 ? moved : plain;\n"
 					+ "    if (u_cleanEdges > 0.5 && u_t <= 1.0 && agree < 0.999) {\n"
 					+ "        vec2 mn = newMotionAt(v_uv);\n"
 					+ "        vec2 pn = v_uv + mn * (1.0 - u_t);\n"
@@ -243,7 +315,7 @@ final class InterpolationProgram {
 					+ "            fallback = texture2D(u_prev, po);\n"
 					+ "        }\n"
 					+ "    }\n"
-					+ "    gl_FragColor = mix(fallback, mix(g_bestA, g_bestB, tc), agree);\n"
+					+ "    gl_FragColor = mix(fallback, moved, agree);\n"
 					+ "}\n";
 
 	final int id;
@@ -256,6 +328,7 @@ final class InterpolationProgram {
 	final int uError;
 	final int uUseError;
 	final int uChange;
+	final int uCodeLinear;
 	final int uCleanEdges;
 	final int uT;
 	final int uUseMotion;
@@ -276,6 +349,7 @@ final class InterpolationProgram {
 		uError = glGetUniformLocation(id, "u_error");
 		uUseError = glGetUniformLocation(id, "u_useError");
 		uChange = glGetUniformLocation(id, "u_change");
+		uCodeLinear = glGetUniformLocation(id, "u_codeLinear");
 		uCleanEdges = glGetUniformLocation(id, "u_cleanEdges");
 		uT = glGetUniformLocation(id, "u_t");
 		uUseMotion = glGetUniformLocation(id, "u_useMotion");

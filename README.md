@@ -55,6 +55,8 @@ For games that cap their own frame rate (for example 20-30 fps), the per-game se
 
 With Motion, **Motion search** sets how the motion is found:
 
+- **Ultra**: like Quality, and follows movement of up to 64 pixels per frame, for very fast racing and scrolling games. About 1.5 to 2 times the CPU of Quality.
+
 - **Quality** (the default): a quick search on a quarter-size copy, then 8x8 pixel blocks at full size, to a quarter of a pixel, following movement of up to 32 pixels per frame. The most accurate; about twice the CPU of Performance.
 - **Performance**: a search on a half-size copy, to half a pixel, following movement of up to 16 pixels per frame. Lighter on the CPU; faster movement is only cross-faded.
 
@@ -73,6 +75,8 @@ With Motion, the switch **Steady motion** (off by default) offers each block the
 With Motion, **Search on** sets where the motion search runs: **One core** (the default for new games; lightest on the battery, but the search takes the longest, which adds to the delay), **Multi-core** (up to four cores share it: the same pictures, worked out two to three times sooner) or **GPU** (experimental: the same steps as the Quality search, quarter-size coarse search, 8x8 blocks refined to a quarter pixel and smoothing, done in OpenGL ES 2.0 shaders with the result staying on the GPU; it frees the CPU and adds no delay, and if a phone's GPU can not run it the CPU searches as before). It replaces the switches Multi-core search and GPU search; games keep what they had.
 
 With Motion, the switch **Low latency** (off by default) removes the added delay: each game frame is shown as soon as the game draws it, and the pictures until the next frame carry it on along its motion (extrapolation) instead of leading up to it. The controls respond almost as fast as with frame generation off. The pictures between frames are a guess, so when something stops, turns or speeds up the picture goes a little too far for a moment, and the edges of moving objects can tear a little instead of looking soft. Clean edges has no effect with it.
+
+Parts of the picture that stand still in both frames (a score, text, buttons, still scenery) are shown exactly as they are, instead of being moved along with the motion around them, so they stay sharp. A repeating pattern (a fence, tiles, a road) fits several motions equally well; where a block fits the motion of most of the picture about as well as its own, it takes that motion, so the pattern moves the way the rest of the picture does. A sharp edge moved by a fraction of a pixel lands half a pixel apart in the two frames; that is recognised and the moved pictures are blended, instead of falling back to a cross-fade.
 
 Fades, flashes and other changes of the whole picture's brightness are followed too: the motion is searched and checked with the change of brightness taken out, while the blend shows the brightness changing smoothly.
 

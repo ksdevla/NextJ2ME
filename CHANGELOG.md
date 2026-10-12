@@ -21,6 +21,12 @@
 
 ### More accurate
 
+- **Ultra** (a third Motion search choice): follows motion of up to 64 pixels per frame instead of 32, for very fast racing and scrolling games (real faults on a 44 pixel pan: 26% before, 0.4% now). Performance and Quality are unchanged in cost.
+- Still parts of the picture (a score, text, buttons) are shown as they are instead of being moved with the picture around them (real faults in a HUD: 0.43% before, 0.01% now).
+- A repeating pattern (a fence, tiles, a road) moves the way the rest of the picture does, instead of sometimes the wrong way (real faults on a fence: 9% before, 0.9% now), on the CPU and the GPU.
+- A sharp edge moved by a fraction of a pixel no longer makes the picture fall back to a cross-fade (wrong pixels on a pan with Quality: 0.86% before, 0.04% now).
+- With Low latency the newest frame is drawn between its pixels when moved by a fraction of a pixel (wrong pixels on a pan: 12.6% before, 6.8% now).
+
 Measured with a new test that compares each generated picture with the true picture at that moment (wrong pixels, the Quality search, a fast pan: 6.4% before, 1.4% now):
 
 - Picture coming in at the edges of the screen (scrolling, camera pans) is taken from the frame that has it, instead of being cross-faded with whatever was there.

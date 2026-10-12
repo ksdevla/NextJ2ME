@@ -323,4 +323,45 @@ public class GpuMotionSearchTest {
 			s.release();
 		}
 	}
+
+	@Test
+	public void ultraFollowsMotionBeyond32Pixels() {
+		GpuMotionSearch s = GpuMotionSearch.create(W, H, true);
+		assertNotNull(s);
+		int a = texture(gray(W, H, 0, 0), W, H);
+		int b = texture(gray(W, H, 44.5, -6.25), W, H);
+		s.addFrame(0, a);
+		s.addFrame(1, b);
+		s.search(0, a, 1, b, false, false, Brightness.NONE);
+		int[] m = middle(s.readVectors(false), s.cols(), s.rows());
+		assertEquals(Math.round(44.5f * U), m[0], MotionCode.STEP);
+		assertEquals(Math.round(-6.25f * U), m[1], 2);
+		s.release();
+	}
+
+	@Test
+	public void aRepeatingBandMovesTheWayTheRestOfThePictureDoes() {
+		byte[] prev = new byte[W * H];
+		byte[] curr = new byte[W * H];
+		byte[] whole0 = gray(W, H, 0, 0);
+		byte[] whole1 = gray(W, H, 11.25, 0);
+		byte[] band0 = stripes(16, 0);
+		byte[] band1 = stripes(16, 11.25);
+		for (int i = 0; i < W * H; i++) {
+			boolean band = i / W >= 110 && i / W < 210;
+			prev[i] = band ? band0[i] : whole0[i];
+			curr[i] = band ? band1[i] : whole1[i];
+		}
+		GpuMotionSearch s = GpuMotionSearch.create(W, H);
+		int[] v = search(s, prev, curr, null);
+		int right = 0, n = 0;
+		for (int by = 15; by < 25; by++) {
+			for (int bx = 4; bx < s.cols() - 4; bx++) {
+				n++;
+				right += Math.abs(v[(by * s.cols() + bx) * 2] - 45) <= 2 ? 1 : 0;
+			}
+		}
+		assertTrue("blocks of the band moving the right way: " + right + " of " + n, right >= n * 9 / 10);
+		s.release();
+	}
 }
