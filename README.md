@@ -80,6 +80,8 @@ Parts of the picture that stand still in both frames (a score, text, buttons, st
 
 Fades, flashes and other changes of the whole picture's brightness are followed too: the motion is searched and checked with the change of brightness taken out, while the blend shows the brightness changing smoothly.
 
+With **Show FPS** on, frame generation shows what it does on two lines: the game's own frames per second and the pictures shown per second (for example `20 → 60 fps`), then how long the motion search of a game frame takes (`search on GPU` when the GPU searches) and the delay it adds: how long after the game finishes a frame that frame is fully on the screen (about one game frame, or 0 with Low latency).
+
 It needs the graphics mode **HW acceleration (OpenGL ES)** (the default) and adds about one game frame of delay (not with Low latency). If the device cannot run it, the game falls back to normal drawing.
 
 ### 3D resolution (Mascot Capsule, experimental)

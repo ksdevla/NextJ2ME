@@ -99,9 +99,14 @@ public class CanvasWrapper {
 	}
 
 	public void drawBackgroundedText(String text) {
+		drawBackgroundedText(text, 0);
+	}
+
+	/** Like {@link #drawBackgroundedText(String)}, {@code top} pixels down (for more lines). */
+	public void drawBackgroundedText(String text, float top) {
 		float width = textPaint.measureText(text);
-		canvas.drawRect(0, 0, width, textHeight, fillPaint);
-		canvas.drawText(text, width / 2.0f, -textAscent, textPaint);
+		canvas.drawRect(0, top, width, top + textHeight, fillPaint);
+		canvas.drawText(text, width / 2.0f, top - textAscent, textPaint);
 	}
 
 	public float getTextHeight() {

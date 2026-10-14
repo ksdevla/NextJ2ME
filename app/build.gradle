@@ -16,6 +16,8 @@ android {
         versionCode 10100 // major * 10000 + minor * 100 + patch; must only ever go up
         versionName "1.1.0"
         resValue 'string', 'app_name', rootProject.name
+        // English only: the translations from J2ME Loader stay in the project but are not built in
+        resourceConfigurations += ['en']
         vectorDrawables.useSupportLibrary = true
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }

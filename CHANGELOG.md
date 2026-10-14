@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Show FPS** with frame generation shows two lines: the game's own frames per second and the pictures shown (for example `20 → 60 fps`), then the time the motion search takes and the delay frame generation adds. Without frame generation it shows the frames per second as before.
+
+### Changed
+
+- The app is in English only, whatever the language of the phone. The translations inherited from J2ME Loader covered only its own screens and mixed with the English of the new ones; one of them (Portuguese) made the app crash when a shortcut pointed to a game that is no longer installed. The APK is 0.7 MB smaller.
+
 ## NextJ2ME 1.1.0 (2026-10-12)
 
 Frame generation, improved throughout: smoother pacing, an option without the added delay, clearer settings, and much more accurate pictures, measured against the true picture at every moment.

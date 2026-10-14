@@ -850,7 +850,7 @@ public abstract class Canvas extends Displayable {
 		keyReleased(keyCode);
 	}
 
-	private class GLRenderer implements GLSurfaceView.Renderer {
+	private class GLRenderer implements GLSurfaceView.Renderer, FpsCounter.FrameGenerationInfo {
 		private final FloatBuffer vbo = ByteBuffer.allocateDirect(8 * 2 * 4)
 				.order(ByteOrder.nativeOrder()).asFloatBuffer();
 		private GLSurfaceView mView;
@@ -858,7 +858,7 @@ public abstract class Canvas extends Displayable {
 		private ShaderProgram program;
 		private boolean isStarted;
 		/** Draws pictures between the game's frames; null when frame generation is off or failed. */
-		private FrameGenerator frameGenerator;
+		private volatile FrameGenerator frameGenerator;
 		/** Whether the view redraws on every screen refresh (only touched on the GL thread). */
 		private boolean redrawEveryRefresh;
 		/** Asks for pictures at the chosen rate or with even pacing; null when drawing on every refresh. */
@@ -1063,12 +1063,33 @@ public abstract class Canvas extends Displayable {
 				// the game finished a frame: the generator picks it up on the next screen refresh
 				frameNanos = System.nanoTime();
 				frameCounter.incrementAndGet();
+				if (fpsCounter != null) {
+					fpsCounter.incrementGame();
+				}
 				if (frameRateDriver != null && frameRateDriver.isRunning()) {
 					// the pictures come at the chosen rate; an extra one now would break the rhythm
 					return;
 				}
 			}
 			mView.requestRender();
+		}
+
+		@Override
+		public float searchMillis() {
+			FrameGenerator g = frameGenerator;
+			return g != null ? g.searchMillis() : -1f;
+		}
+
+		@Override
+		public boolean searchesOnGpu() {
+			FrameGenerator g = frameGenerator;
+			return g != null && g.searchesOnGpu();
+		}
+
+		@Override
+		public float delayMillis() {
+			FrameGenerator g = frameGenerator;
+			return g != null ? g.delayMillis() : 0f;
 		}
 
 		public void setView(GLSurfaceView mView) {
@@ -1435,6 +1456,10 @@ public abstract class Canvas extends Displayable {
 			repaintInternal();
 			if (showFps) {
 				fpsCounter = new FpsCounter(overlayView);
+				if (renderer != null && frameGeneration != 0) {
+					// the game's own frames, the motion search and the delay too
+					fpsCounter.setFrameGenerationInfo(renderer);
+				}
 				overlayView.addLayer(fpsCounter);
 			}
 			overlayView.addLayer(softBar, 0);

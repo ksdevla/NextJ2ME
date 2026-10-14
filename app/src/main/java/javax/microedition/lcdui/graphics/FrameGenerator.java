@@ -211,6 +211,9 @@ public final class FrameGenerator {
 	/** Into how many bands the motion search is split (1 = the worker alone). */
 	private final int parts;
 	private volatile Motion motion;
+	/** For the Show FPS overlay: the mean motion search time and the delay (see the getters). */
+	private volatile float searchMillis = -1f;
+	private volatile float delayMillis;
 	private int uploadedMotion = -1;
 	private int gridCols = 1;
 	private int gridRows = 1;
@@ -295,6 +298,27 @@ public final class FrameGenerator {
 	 */
 	public boolean isSettled() {
 		return pacer.isSettled();
+	}
+
+	/**
+	 * For the Show FPS overlay: how long the CPU motion search of a game frame takes (a running
+	 * mean), in milliseconds; below 0 when the CPU does not search.
+	 */
+	public float searchMillis() {
+		return worker != null ? searchMillis : -1f;
+	}
+
+	/** For the Show FPS overlay: whether the motion is searched on the GPU. */
+	public boolean searchesOnGpu() {
+		return gpu != null;
+	}
+
+	/**
+	 * For the Show FPS overlay: how long after the game finishes a frame it is fully shown, in
+	 * milliseconds (the delay frame generation adds).
+	 */
+	public float delayMillis() {
+		return delayMillis;
 	}
 
 	/** Stops the worker and frees the GL objects (when the context is lost they go with it). */
@@ -581,6 +605,7 @@ public final class FrameGenerator {
 		final boolean useLast = steady;
 		final float[] change = brightnessChange(index);
 		executor.execute(() -> {
+			long started = System.nanoTime();
 			try {
 				byte[] gray = fine != null ? FineMotionEstimator.toGray(px, w, h, state.spare)
 						: MotionEstimator.toGray(px, w, h, state.spare);
@@ -616,6 +641,10 @@ public final class FrameGenerator {
 				state.gray = gray;
 				state.frame = index;
 				state.vectors = last;
+				if (found != null) {
+					float took = (System.nanoTime() - started) / 1e6f;
+					searchMillis = searchMillis < 0 ? took : searchMillis * 0.8f + took * 0.2f;
+				}
 				// also when nothing was found, so the blend does not wait for it
 				motion = found != null ? found
 						: new Motion(gen, index, 0, 0, null, null, false, System.nanoTime(), MotionCode.EXACT);
@@ -634,6 +663,8 @@ public final class FrameGenerator {
 	private int draw(long nowNanos) {
 		takeMotion();
 		int k = ahead ? pacer.updateAhead(nowNanos) : pacer.update(nowNanos);
+		// a new frame is fully shown at once with low latency, else after its blend
+		delayMillis = ahead ? 0f : (pacer.delayNanos() + pacer.intervalNanos()) / 1e6f;
 		return drawPicture(k, pacer.blend());
 	}
 
